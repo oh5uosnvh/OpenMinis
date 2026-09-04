@@ -1,0 +1,214 @@
+name: Build Android APK
+
+# [FORK] Builds the魔改 APK from the `mods` branch.
+#
+# Everything the APK needs beyond the git tree is produced HERE, because
+# upstream deliberately does not commit build artifacts (see BUILDING.md):
+#   * proot + libtalloc          → deps/build_proot.sh          (NDK, cached)
+#   * Alpine aarch64 rootfs      → scripts/prepare_android_sandbox.sh (cached)
+#   * rclone.aar                 → scripts/fork/prepare-rclone.sh (gomobile,
+#                                  falls back to a 501 stub so one flaky Go
+#                                  build can't sink the whole APK)
+#   * provider-customization.properties → copied from the .example (empty values
+#                                  compile and run; only Claude OAuth needs a
+#                                  real value)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Gradle build type"
+        type: choice
+        default: release
+        options: [release, debug]
+      rclone:
+        description: "rclone.aar (real = full remote backup, stub = disabled)"
+        type: choice
+        default: real
+        options: [real, stub]
+      make_release:
+        description: "Publish the APK as a GitHub Release"
+        type: boolean
+        default: true
+  push:
+    branches: [mods]
+    paths:
+      - "src/android/**"
+      - "src/shared/**"
+      - "deps/**"
+      - "scripts/**"
+      - ".github/workflows/build-apk.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      BUILD_TYPE: ${{ inputs.build_type || 'release' }}
+      RCLONE_MODE: ${{ inputs.rclone || 'real' }}
+      # Pinned via the fork's init script, NOT build.gradle.kts — see
+      # scripts/fork/ndk-version.init.gradle.kts.
+      FORK_NDK_VERSION: "28.1.13356709"
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Go (for the rclone gomobile binding)
+        if: env.RCLONE_MODE == 'real'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: false
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK ${{ env.FORK_NDK_VERSION }} + CMake
+        run: |
+          set -eux
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager --install \
+            "ndk;${FORK_NDK_VERSION}" \
+            "cmake;3.22.1" \
+            "platforms;android-36" \
+            "build-tools;35.0.0"
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${FORK_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=${ANDROID_SDK_ROOT}/ndk/${FORK_NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build-time customization (empty values, as upstream ships)
+        run: |
+          set -eux
+          cp -n src/android/app/provider-customization.properties.example \
+                src/android/app/provider-customization.properties || true
+
+      # ── Native deps ────────────────────────────────────────────────────
+      # Keyed on the scripts + submodule commits: a change to either must
+      # invalidate the cache, otherwise a stale proot silently ships.
+      - name: Cache sandbox artifacts
+        id: cache-sandbox
+        uses: actions/cache@v4
+        with:
+          path: |
+            src/android/app/src/main/assets/proot-aarch64
+            src/android/app/src/main/assets/alpine-minirootfs.tar.gz
+            src/android/app/src/main/jniLibs/arm64-v8a/libproot.so
+            deps/build/proot-android
+            deps/talloc
+          key: sandbox-${{ runner.os }}-ndk${{ env.FORK_NDK_VERSION }}-${{ hashFiles('deps/build_proot.sh', 'scripts/prepare_android_sandbox.sh', '.gitmodules') }}-${{ hashFiles('.git/modules/deps/proot/HEAD') }}
+
+      - name: Build proot (+ libtalloc)
+        run: |
+          set -eux
+          # deps/build_proot.sh verifies the vendored Termux loaders with
+          # `shasum -a 256` (a macOS-ism). Ubuntu runners ship it via perl, but
+          # provide a shim if this image ever doesn't.
+          if ! command -v shasum >/dev/null 2>&1; then
+            sudo install -m 0755 scripts/fork/shasum-shim.sh /usr/local/bin/shasum
+          fi
+          bash deps/build_proot.sh
+
+      - name: Prepare Alpine rootfs asset
+        run: bash scripts/prepare_android_sandbox.sh
+
+      - name: Cache Go build (rclone)
+        if: env.RCLONE_MODE == 'real'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            ~/go/bin
+          key: go-rclone-${{ runner.os }}-${{ hashFiles('deps/rclone-mobile/go.sum') }}
+
+      - name: Prepare rclone.aar (${{ env.RCLONE_MODE }})
+        run: bash scripts/fork/prepare-rclone.sh "${RCLONE_MODE}"
+
+      # ── Gradle ─────────────────────────────────────────────────────────
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          build-root-directory: src/android
+
+      - name: Assemble ${{ env.BUILD_TYPE }} APK
+        working-directory: src/android
+        run: |
+          set -eux
+          TASK="assembleRelease"
+          [ "$BUILD_TYPE" = "debug" ] && TASK="assembleDebug"
+          ./gradlew --no-daemon --stacktrace \
+            --init-script ../../scripts/fork/ndk-version.init.gradle.kts \
+            ":app:${TASK}"
+
+      - name: Locate and name the APK
+        id: apk
+        run: |
+          set -eux
+          APK="$(find src/android/app/build/outputs/apk -name '*.apk' -type f | head -1)"
+          test -n "$APK"
+          VER="$(grep -m1 'versionName' src/android/app/build.gradle.kts | sed 's/[^"]*"\([^"]*\)".*/\1/')"
+          SHORT="$(git rev-parse --short HEAD)"
+          NAME="OpenMinis-mods-${VER}-${SHORT}-arm64-v8a.apk"
+          mkdir -p dist && cp "$APK" "dist/${NAME}"
+          echo "path=dist/${NAME}" >> "$GITHUB_OUTPUT"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "short=${SHORT}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## APK"
+            echo "- \`${NAME}\`"
+            echo "- size: $(du -h "dist/${NAME}" | cut -f1)"
+            echo "- upstream version: ${VER}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.path }}
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: ${{ inputs.make_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APK_PATH: ${{ steps.apk.outputs.path }}
+          APK_VERSION: ${{ steps.apk.outputs.version }}
+          APK_SHORT: ${{ steps.apk.outputs.short }}
+        run: |
+          set -eux
+          TAG="mods-${APK_VERSION}-${APK_SHORT}"
+          # Notes go through a file rather than an inline multi-line argument:
+          # a `\`-continued shell command with an embedded newline inside a
+          # quoted string is exactly the shape that makes this YAML unparseable.
+          cat > /tmp/notes.md <<NOTES
+          自动构建于 \`mods\` 分支（上游 ${APK_VERSION}）。
+
+          魔改内容：
+          - 服务商页面底部固定「配置 / 模型」双标签
+          - 模型改为手动「获取模型」+ 勾选添加，不再一键灌入全部模型
+          - 添加服务商时即可填写自定义 User-Agent
+          - API Key 全量明文显示、可换行，编辑态按钮为 取消 · 复制 · 保存
+          NOTES
+          sed -i 's/^          //' /tmp/notes.md
+          gh release create "$TAG" "$APK_PATH" \
+            --title "魔改版 ${APK_VERSION} (${APK_SHORT})" \
+            --notes-file /tmp/notes.md \
+            || gh release upload "$TAG" "$APK_PATH" --clobber

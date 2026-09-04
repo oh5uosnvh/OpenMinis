@@ -146,3 +146,7 @@ deps/lame-3.100/**/.deps/
 # not a vendored binary — same treatment as the iOS Rclone.xcframework it is
 # built alongside (deps/build_rclone_ios.sh).
 src/android/app/libs/rclone.aar
+
+# [FORK] rclone.aar is produced by scripts/fork/prepare-rclone.sh at build time
+# (real gomobile build, or a 501 stub). Never commit it — see docs/FORK.md §5.
+deps/build/rclone-stub/

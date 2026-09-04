@@ -1,0 +1,159 @@
+name: Sync Upstream
+
+# [FORK] Rebase the魔改 onto a newer upstream release.
+#
+# Contract:
+#   main   — pure upstream mirror, fast-forward only. Never hand-edited.
+#   mods   — our patches, always rebased onto upstream/main. History IS rewritten
+#            (that is what "a patch series against current upstream" means).
+#   patches/ — .patch snapshot of `mods` after every successful sync, so a future
+#            conflict can be inspected patch-by-patch instead of archaeologically.
+#
+# On conflict nothing is force-pushed: the conflicting state is pushed to
+# `rebase-failed/<upstream-sha>` and an Issue is opened listing the files.
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream ref to sync to (branch, tag or SHA)"
+        default: "main"
+      dry_run:
+        description: "Rebase and report, but do not push"
+        type: boolean
+        default: false
+  schedule:
+    # 03:20 UTC ≈ 11:20 Asia/Shanghai, Mondays.
+    - cron: "20 3 * * 1"
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      UPSTREAM_URL: https://github.com/OpenMinis/OpenMinis.git
+      UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
+
+    steps:
+      - name: Checkout mods
+        uses: actions/checkout@v4
+        with:
+          ref: mods
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Configure git
+        run: |
+          git config user.name "fork-sync[bot]"
+          git config user.email "fork-sync@users.noreply.github.com"
+
+      - name: Fetch upstream
+        id: fetch
+        run: |
+          set -eux
+          git remote add upstream "$UPSTREAM_URL" 2>/dev/null || \
+            git remote set-url upstream "$UPSTREAM_URL"
+          git fetch upstream --tags --prune
+          TARGET="$(git rev-parse "upstream/${UPSTREAM_REF}" 2>/dev/null || git rev-parse "${UPSTREAM_REF}")"
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short "$TARGET")" >> "$GITHUB_OUTPUT"
+          BASE="$(git merge-base HEAD "$TARGET" || true)"
+          if [ "$BASE" = "$TARGET" ]; then
+            echo "uptodate=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "uptodate=no" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "## Upstream"
+            echo "- ref: \`${UPSTREAM_REF}\` → \`$(git rev-parse --short "$TARGET")\`"
+            echo "- subject: $(git log -1 --format=%s "$TARGET")"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Already up to date
+        if: steps.fetch.outputs.uptodate == 'yes'
+        run: echo "- mods already contains this upstream ref; nothing to do." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Rebase mods onto upstream
+        if: steps.fetch.outputs.uptodate == 'no'
+        id: rebase
+        run: |
+          set -x
+          # The fork's commits are exactly those not in upstream's history.
+          COUNT="$(git rev-list --count "${{ steps.fetch.outputs.target }}..HEAD")"
+          echo "- fork commits to replay: ${COUNT}" >> "$GITHUB_STEP_SUMMARY"
+
+          if git rebase "${{ steps.fetch.outputs.target }}"; then
+            echo "ok=yes" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "ok=no" >> "$GITHUB_OUTPUT"
+          {
+            echo "### ⚠️ Rebase conflict"
+            echo ""
+            echo "Conflicting paths:"
+            echo '```'
+            git diff --name-only --diff-filter=U || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          git diff --name-only --diff-filter=U > /tmp/conflicts.txt || true
+          # Leave the working tree mid-rebase so the branch push below captures it.
+          exit 0
+
+      - name: Push conflict state + open issue
+        if: steps.rebase.outputs.ok == 'no'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          BRANCH="rebase-failed/${{ steps.fetch.outputs.short }}"
+          # Commit the conflict markers verbatim — the point is to hand a human
+          # an inspectable tree, not a clean one.
+          git add -A
+          git commit -m "wip: rebase conflict onto upstream ${{ steps.fetch.outputs.short }}" || true
+          git push -f origin "HEAD:refs/heads/${BRANCH}"
+          BODY="$(printf '自动 rebase 到上游 `%s` 失败。\n\n冲突文件：\n```\n%s\n```\n\n冲突现场已推到分支 `%s`。\n\n处理方式见 docs/FORK.md §4：原则是**上游实现优先**，我们只在新的上游代码上重新打同样的挂钩。\n' \
+            "${{ steps.fetch.outputs.short }}" "$(cat /tmp/conflicts.txt 2>/dev/null || echo unknown)" "$BRANCH")"
+          gh issue create \
+            --title "同步失败：rebase 到上游 ${{ steps.fetch.outputs.short }} 有冲突" \
+            --body "$BODY" \
+            --label "upstream-sync" || echo "$BODY"
+          exit 1
+
+      - name: Export patch snapshot
+        if: steps.rebase.outputs.ok == 'yes'
+        run: |
+          set -eux
+          bash scripts/fork/export-patches.sh "${{ steps.fetch.outputs.target }}"
+          git add patches
+          git commit -m "chore(fork): refresh patch snapshot for upstream ${{ steps.fetch.outputs.short }}" || true
+
+      - name: Push
+        if: steps.rebase.outputs.ok == 'yes' && env.DRY_RUN == 'no'
+        run: |
+          set -eux
+          # main tracks upstream verbatim.
+          git push origin "${{ steps.fetch.outputs.target }}:refs/heads/main" --force
+          # mods was rebased, so its history changed by definition.
+          git push --force-with-lease origin HEAD:refs/heads/mods
+          {
+            echo "### ✅ Synced"
+            echo "- \`main\` → upstream \`${{ steps.fetch.outputs.short }}\`"
+            echo "- \`mods\` rebased and force-pushed"
+            echo ""
+            echo "下一步：Actions → **Build Android APK** 出包。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dry run summary
+        if: steps.rebase.outputs.ok == 'yes' && env.DRY_RUN == 'yes'
+        run: echo "### ✅ Rebase succeeded (dry run — nothing pushed)" >> "$GITHUB_STEP_SUMMARY"
