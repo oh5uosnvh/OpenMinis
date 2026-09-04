@@ -31,10 +31,13 @@ import kotlinx.coroutines.withContext
  *      objects `refreshModels` uses (identical auth, base-URL and UA handling,
  *      so a relay that works there works here), returns the list, writes
  *      nothing.
- *   2. The user ticks what they want in ProviderModelsFetchSheet.
- *   3. [addSelected] — commits ONLY those, via `ProviderRepository.addEntry`,
- *      which is additive and dedupes on `baseModel.id`. Existing entries,
- *      their overrides, hidden flags and group memberships are untouched.
+ *   2. The user taps ＋ / － per model (or per family) in
+ *      ProviderModelsFetchSheet.
+ *   3. [addModels] / [removeModels] — commit ONLY those, batched, via
+ *      `ProviderRepository.addEntries` / `removeEntries`. Adding is additive and
+ *      dedupes on `baseModel.id`; removal cascade-cleans group membership and
+ *      the agent-loop pin. Existing entries, their overrides and hidden flags
+ *      are untouched.
  *
  * The upstream refresh path is left completely intact — this is additive. If
  * an upstream update changes how models are fetched, the only thing that can
@@ -164,10 +167,13 @@ object ProviderCatalogFetcher {
     }
 
     /**
-     * Commit the user's picks. Additive: [ProviderRepository.addEntry] skips an
-     * entry whose `baseModel.id` already exists on this instance, so re-adding
-     * is a no-op rather than a duplicate, and nothing already present is
-     * removed or reset.
+     * Commit picks. Additive: [ProviderRepository.addEntries] skips any model
+     * whose id already exists on this instance, so re-adding is a no-op rather
+     * than a duplicate, and nothing already present is removed or reset.
+     *
+     * One batched write rather than N: the sheet's add-all can cover a 400-model
+     * catalog, and 400 separate `addEntry` calls means 400 saveConfig round-trips
+     * (DB + JSON mirror + a StateFlow emission that recomposes every reader).
      *
      * ## Why `isCustom = true` on models that came from the provider's catalog
      *
@@ -194,27 +200,56 @@ object ProviderCatalogFetcher {
      *
      * Returns how many entries were actually new.
      */
-    fun addSelected(
+    fun addModels(
         instanceId: String,
         models: List<LLMModel>,
         providerRepository: ProviderRepository,
     ): Int {
+        if (models.isEmpty()) return 0
         val existing = providerRepository.entriesFor(instanceId)
             .map { it.baseModel.id }
             .toSet()
-        var added = 0
-        for (model in models) {
-            if (model.id in existing) continue
-            providerRepository.addEntry(
+        val fresh = models
+            .filter { it.id !in existing }
+            // A catalog can list the same id twice; dedupe before the write so
+            // two rows can never appear for one model.
+            .distinctBy { it.id }
+            .map { model ->
                 com.openminis.app.data.model.ModelEntry(
                     providerInstanceId = instanceId,
                     baseModel = model,
                     isCustom = true,
-                ),
-            )
-            added++
-        }
-        AppLogger.info(TAG, "addSelected: $added new of ${models.size} picked for $instanceId")
+                )
+            }
+        if (fresh.isEmpty()) return 0
+        val added = providerRepository.addEntries(fresh)
+        AppLogger.info(TAG, "addModels: $added new of ${models.size} for $instanceId")
         return added
+    }
+
+    /**
+     * Drop models from this instance by MODEL id (not entry id — the fetch sheet
+     * only knows the catalog's ids).
+     *
+     * Batched for the same reason as [addModels], and it goes through
+     * [ProviderRepository.removeEntries] so group membership and the agent-loop
+     * pin are cascade-cleaned exactly as a single `removeEntry` would.
+     *
+     * Returns how many entries were actually removed.
+     */
+    fun removeModels(
+        instanceId: String,
+        modelIds: Collection<String>,
+        providerRepository: ProviderRepository,
+    ): Int {
+        if (modelIds.isEmpty()) return 0
+        val ids = modelIds.toSet()
+        val entryIds = providerRepository.entriesFor(instanceId)
+            .filter { it.baseModel.id in ids }
+            .map { it.id }
+        if (entryIds.isEmpty()) return 0
+        val removed = providerRepository.removeEntries(entryIds)
+        AppLogger.info(TAG, "removeModels: $removed of ${modelIds.size} for $instanceId")
+        return removed
     }
 }

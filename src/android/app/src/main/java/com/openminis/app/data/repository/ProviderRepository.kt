@@ -1246,6 +1246,79 @@ class ProviderRepository(private val context: Context) {
         saveConfig(config)
     }
 
+    // [FORK] Batch counterparts of addEntry / removeEntry — see docs/FORK.md.
+    //
+    // The fork's 获取模型 sheet writes on every tap, and its group / select-all
+    // controls act on a whole family at once. A relay fronting 400 models turns
+    // "add all" into 400 addEntry calls, i.e. 400 saveConfig round-trips: 400 DB
+    // writes, 400 JSON mirror writes and 400 StateFlow emissions, each one
+    // recomposing every collectAsState reader. That is seconds of frozen UI for
+    // an operation that is logically ONE mutation.
+    //
+    // These do the same work inside a single configLock window and save once.
+    // Purely additive: neither touches existing behaviour, and the singular
+    // versions stay the right choice for a single row.
+
+    /**
+     * [FORK] Add many entries in one transaction.
+     *
+     * Dedupe rule matches [addEntry] — a non-custom entry whose `baseModel.id`
+     * already exists on that instance is skipped — and is additionally applied
+     * WITHIN the batch, so a catalog that lists the same id twice cannot produce
+     * two rows.
+     *
+     * @return how many were actually added.
+     */
+    fun addEntries(entries: List<ModelEntry>): Int {
+        if (entries.isEmpty()) return 0
+        return synchronized(configLock) {
+            ensureConfigLoaded()
+            val config = workingCopy()
+            // Seed with what's already stored, then grow as the batch is applied
+            // so a catalog listing the same id twice cannot produce two rows.
+            val seen = config.modelEntries
+                .map { it.providerInstanceId to it.baseModel.id }
+                .toMutableSet()
+            var added = 0
+            for (entry in entries) {
+                val key = entry.providerInstanceId to entry.baseModel.id
+                if (!entry.isCustom && key in seen) continue
+                config.modelEntries.add(entry)
+                seen.add(key)
+                added++
+            }
+            if (added > 0) saveConfig(config)
+            added
+        }
+    }
+
+    /**
+     * [FORK] Remove many entries in one transaction, with the same cascade
+     * cleanup [removeEntry] performs (group membership + agent-loop pin), so a
+     * batch removal cannot leave a group pointing at a dead entry id.
+     *
+     * @return how many were actually removed.
+     */
+    fun removeEntries(entryIds: Collection<String>): Int {
+        if (entryIds.isEmpty()) return 0
+        val ids = entryIds.toSet()
+        return synchronized(configLock) {
+            ensureConfigLoaded()
+            val config = workingCopy()
+            val before = config.modelEntries.size
+            config.modelEntries.removeAll { it.id in ids }
+            val removed = before - config.modelEntries.size
+            if (removed > 0) {
+                config.modelGroups.forEach { group ->
+                    group.memberEntryIds.removeAll { it in ids }
+                }
+                config.agentLoopModelEntryIds.removeAll { it in ids }
+                saveConfig(config)
+            }
+            removed
+        }
+    }
+
     // --- Model Group management ---
 
     fun addGroup(group: ModelGroup): Unit = synchronized(configLock) {

@@ -27,21 +27,23 @@
     <string name="fork_models_delete_all_message">将移除该服务商下全部 %1$d 个模型，随时可以重新获取。</string>
 
     <!-- 获取模型面板 -->
+    <!-- 获取模型面板 -->
     <string name="fork_fetch_title">获取模型</string>
-    <string name="fork_fetch_subtitle">勾选要添加的模型，确认后才会写入。</string>
+    <string name="fork_fetch_subtitle">点 ＋ 添加模型，点 － 移除。</string>
     <string name="fork_fetch_close">关闭</string>
     <string name="fork_fetch_loading">正在从服务商获取…</string>
     <string name="fork_fetch_retry">重试</string>
     <string name="fork_fetch_failed">获取失败：%1$s</string>
     <string name="fork_fetch_empty">服务商没有返回任何模型。</string>
-    <string name="fork_fetch_select_all">全选</string>
-    <string name="fork_fetch_clear_selection">清空</string>
-    <string name="fork_fetch_add_selected">添加 %1$d 个</string>
-    <string name="fork_fetch_add_none">添加</string>
-    <string name="fork_fetch_already_added">已添加</string>
-    <string name="fork_fetch_added_toast">已添加 %1$d 个模型</string>
-    <string name="fork_fetch_found">共 %1$d 个模型</string>
+    <string name="fork_fetch_done">完成</string>
+    <string name="fork_fetch_found_added">共 %1$d 个 · 已添加 %2$d 个</string>
     <string name="fork_fetch_invert">反选</string>
+    <string name="fork_fetch_add_all">添加当前全部</string>
+    <string name="fork_fetch_remove_all">移除当前全部</string>
+    <string name="fork_fetch_add_family">添加该组</string>
+    <string name="fork_fetch_remove_family">移除该组</string>
+    <string name="fork_fetch_add_model">添加</string>
+    <string name="fork_fetch_remove_model">移除</string>
 
     <!-- 能力标签 -->
     <string name="fork_chip_chat">聊天</string>
@@ -53,6 +55,8 @@
     <string name="fork_health_stop">停止</string>
     <string name="fork_health_dead">不可用</string>
     <string name="fork_health_exit_selection">退出选择</string>
+    <string name="fork_health_select_all">全选</string>
+    <string name="fork_health_clear_selection">清空</string>
 
     <!-- 添加服务商 -->
     <string name="fork_add_provider_ua_footer">部分网关会拒绝默认 User-Agent，只放行官方客户端。除非你的端点有要求，留空即可。</string>

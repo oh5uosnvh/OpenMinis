@@ -91,7 +91,8 @@ import kotlinx.coroutines.launch
  *
  *  - No one-tap "refresh everything". Upstream's `Refresh model list` calls
  *    `refreshModels`, which REPLACES the entry list with the endpoint's whole
- *    catalog. 获取 opens a picker instead ([ProviderModelsFetchSheet]).
+ *    catalog. 获取 opens a browser instead ([ProviderModelsFetchSheet]), where
+ *    each row has a ＋/－ that writes immediately.
  *  - Swipe a row left to reveal a single square Remove button; tapping it
  *    removes immediately with no confirmation. Several rows can be held open at
  *    once and removed one after another — see [ForkSwipeOpenState] for why that
@@ -306,12 +307,15 @@ fun ProviderModelsTabContent(
                 // Removes ALL entries of this instance, filtered set or not: the
                 // button says 删除 (全部), and deleting "what happens to be
                 // visible" would be a trap for anyone who left a search active.
-                allEntries.forEach { providerRepository.removeEntry(it.id) }
+                // One batched write — a 400-model provider would otherwise mean
+                // 400 saveConfig round-trips (DB + JSON mirror + an emission that
+                // recomposes every reader) for a single logical action.
+                val removed = providerRepository.removeEntries(allEntries.map { it.id })
                 controller.health.clear()
                 controller.swipeState.closeAll()
                 controller.searchQuery = ""
                 controller.showDeleteAllDialog = false
-                AppLogger.info("ForkModels", "delete-all: ${allEntries.size} entries of $instanceId")
+                AppLogger.info("ForkModels", "delete-all: $removed entries of $instanceId")
             },
         )
     }
@@ -504,8 +508,8 @@ fun ProviderModelsActionBar(
                 Spacer(Modifier.width(6.dp))
                 Text(
                     stringResource(
-                        if (allSelected) R.string.fork_fetch_clear_selection
-                        else R.string.fork_fetch_select_all,
+                        if (allSelected) R.string.fork_health_clear_selection
+                        else R.string.fork_health_select_all,
                     ),
                 )
             }

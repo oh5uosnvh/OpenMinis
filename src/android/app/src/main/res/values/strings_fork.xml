@@ -35,20 +35,21 @@
 
     <!-- Fetch sheet -->
     <string name="fork_fetch_title">Fetch Models</string>
-    <string name="fork_fetch_subtitle">Pick the models to add. Nothing is added until you confirm.</string>
+    <string name="fork_fetch_subtitle">Tap ＋ to add a model, － to remove it.</string>
     <string name="fork_fetch_close">Close</string>
     <string name="fork_fetch_loading">Fetching from provider…</string>
     <string name="fork_fetch_retry">Retry</string>
     <string name="fork_fetch_failed">Fetch failed: %1$s</string>
     <string name="fork_fetch_empty">The provider returned no models.</string>
-    <string name="fork_fetch_select_all">Select all</string>
-    <string name="fork_fetch_clear_selection">Clear</string>
-    <string name="fork_fetch_add_selected">Add %1$d selected</string>
-    <string name="fork_fetch_add_none">Add</string>
-    <string name="fork_fetch_already_added">Added</string>
-    <string name="fork_fetch_added_toast">Added %1$d model(s)</string>
-    <string name="fork_fetch_found">Found %1$d models</string>
-    <string name="fork_fetch_invert">Invert selection</string>
+    <string name="fork_fetch_done">Done</string>
+    <string name="fork_fetch_found_added">%1$d models · %2$d added</string>
+    <string name="fork_fetch_invert">Invert</string>
+    <string name="fork_fetch_add_all">Add all shown</string>
+    <string name="fork_fetch_remove_all">Remove all shown</string>
+    <string name="fork_fetch_add_family">Add this group</string>
+    <string name="fork_fetch_remove_family">Remove this group</string>
+    <string name="fork_fetch_add_model">Add</string>
+    <string name="fork_fetch_remove_model">Remove</string>
 
     <!-- Capability chips -->
     <string name="fork_chip_chat">chat</string>
@@ -60,6 +61,8 @@
     <string name="fork_health_stop">Stop</string>
     <string name="fork_health_dead">failed</string>
     <string name="fork_health_exit_selection">Exit selection</string>
+    <string name="fork_health_select_all">Select all</string>
+    <string name="fork_health_clear_selection">Clear</string>
 
     <!-- Add provider -->
     <string name="fork_add_provider_ua_footer">Some gateways reject the default User-Agent and only accept official clients. Leave blank unless your endpoint requires a specific one.</string>
