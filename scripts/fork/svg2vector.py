@@ -253,8 +253,15 @@ def convert(svg_text, mono_color="#FF000000"):
         if color is None:
             color = mono_color
         extra = ""
-        if rule in ("evenodd", "nonzero"):
-            extra = f'\n        android:fillType="{rule}"'
+        # SVG spells these lowercase; the VectorDrawable attribute is an enum of
+        # camelCase names and AAPT rejects anything else outright
+        # ("'evenodd' is incompatible with attribute fillType"). Map explicitly
+        # rather than passing the SVG token through.
+        vd_rule = {"evenodd": "evenOdd", "nonzero": "nonZero"}.get(
+            (rule or "").strip().lower()
+        )
+        if vd_rule:
+            extra = f'\n        android:fillType="{vd_rule}"'
         paths.append(PATH_TEMPLATE.format(
             color=color, extra=extra, data=data.replace('"', "'").strip(),
         ))

@@ -99,6 +99,13 @@ jobs:
           cp -n src/android/app/provider-customization.properties.example \
                 src/android/app/provider-customization.properties || true
 
+      # Committed resources, but validated on every build: AAPT rejects the whole
+      # resource link on one bad VectorDrawable attribute, and the failure lands
+      # deep inside a Gradle run. This turns that into an eight-second check with
+      # a precise message.
+      - name: Validate fork brand icons
+        run: python3 scripts/fork/validate-vectors.py src/android/app/src/main/res/drawable/
+
       # ── Native deps ────────────────────────────────────────────────────
       # Keyed on the scripts + submodule commits: a change to either must
       # invalidate the cache, otherwise a stale proot silently ships.

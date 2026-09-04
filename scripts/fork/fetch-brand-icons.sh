@@ -85,4 +85,12 @@ for entry in $ICONS; do
 done
 
 echo "converted $ok icon(s), skipped $skip"
+
+# ── Validate before anyone commits ────────────────────────────────────────────
+# AAPT is strict about VectorDrawable attribute values and rejects the whole
+# resource link on a single bad one — `fillType="evenodd"` (SVG's lowercase
+# spelling) instead of `evenOdd` failed a CI build once. Catch it here, where the
+# fix is one line, rather than eight minutes into a Gradle run.
+python3 "$ROOT/scripts/fork/validate-vectors.py" "$OUT" || exit 1
+
 ls -1 "$OUT" | grep '^fork_brand_' | sed 's/^/  /'
