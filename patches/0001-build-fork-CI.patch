@@ -1,0 +1,1043 @@
+From d9cfc3d91fd576c88abd8891719f46bcb13b2982 Mon Sep 17 00:00:00 2001
+From: oh5uosnvh <oh5uosnvh@users.noreply.github.com>
+Date: Fri, 4 Sep 2026 10:27:14 +0800
+Subject: [PATCH 1/4] =?UTF-8?q?build(fork):=20CI=20=E5=87=BA=E5=8C=85=20+?=
+ =?UTF-8?q?=20=E4=B8=8A=E6=B8=B8=E5=90=8C=E6=AD=A5=E6=B5=81=E6=B0=B4?=
+ =?UTF-8?q?=E7=BA=BF?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+以「可重放补丁串」而非散落编辑的方式维护本 fork，让上游发新版时能以最小
+改动快速出新 APK。
+
+分支模型（docs/FORK.md）：
+  main   纯上游镜像，fast-forward only，永不手改
+  mods   我们的补丁串，始终 rebase 在 upstream/main 之上，CI 从这里出包
+  patches/ 每次同步成功后的 .patch 快照，rebase 冲突时的救生艇
+
+.github/workflows/build-apk.yml
+  上游刻意不提交构建产物（BUILDING.md），所以 APK 需要的东西全在 CI 现做：
+    proot + libtalloc  → deps/build_proot.sh（NDK 交叉编译，带缓存）
+    Alpine rootfs      → scripts/prepare_android_sandbox.sh（带缓存）
+    rclone.aar         → scripts/fork/prepare-rclone.sh
+    provider-customization.properties ← 从 .example 复制（空值可编译可运行）
+
+.github/workflows/sync-upstream.yml
+  fetch upstream → main 前进 → mods rebase → 导出 patches → force-with-lease
+  推送。冲突时不推 mods，而是把冲突现场推到 rebase-failed/<sha> 并开 Issue
+  列出冲突文件 —— 失败要留下可诊断的现场，不是一句 "rebase failed"。
+
+scripts/fork/prepare-rclone.sh
+  app/build.gradle.kts 里 `implementation(group="", name="rclone", ext="aar")`
+  在 configure 阶段就要求这个 .aar 存在，缺了连 Kotlin 都编译不到。默认用
+  gomobile 真构建；失败自动降级为一个 501 stub（API 形状与 gomobile 生成的
+  一致），结果是只有远程备份不可用，其余功能不受影响，并在构建摘要里写明。
+  一个 Go 依赖抖动不该让整个 APK 出不来。
+
+scripts/fork/ndk-version.init.gradle.kts
+  app 模块有 externalNativeBuild 但没设 ndkVersion，AGP 会退回自己的默认版本
+  并在缺失时直接失败。用 --init-script 从项目外注入，而不是改 build.gradle.kts
+  —— 后者是上游几乎每个版本都动的文件，为一行 CI 管道换来永久冲突不值得。
+
+scripts/fork/shasum-shim.sh
+  deps/build_proot.sh 用 `shasum -a 256` 校验 vendored Termux loader，那是
+  macOS 的命令；Linux runner 上映射到 coreutils 的 sha256sum。
+---
+ .github/workflows/build-apk.yml          | 214 +++++++++++++++++++++++
+ .github/workflows/sync-upstream.yml      | 159 +++++++++++++++++
+ .gitignore                               |   4 +
+ docs/FORK.md                             | 137 +++++++++++++++
+ scripts/fork/export-patches.sh           |  64 +++++++
+ scripts/fork/ndk-version.init.gradle.kts |  41 +++++
+ scripts/fork/prepare-rclone.sh           | 190 ++++++++++++++++++++
+ scripts/fork/shasum-shim.sh              |  28 +++
+ scripts/fork/sync-upstream.sh            |  85 +++++++++
+ 9 files changed, 922 insertions(+)
+ create mode 100644 .github/workflows/build-apk.yml
+ create mode 100644 .github/workflows/sync-upstream.yml
+ create mode 100644 docs/FORK.md
+ create mode 100755 scripts/fork/export-patches.sh
+ create mode 100644 scripts/fork/ndk-version.init.gradle.kts
+ create mode 100755 scripts/fork/prepare-rclone.sh
+ create mode 100755 scripts/fork/shasum-shim.sh
+ create mode 100755 scripts/fork/sync-upstream.sh
+
+diff --git a/.github/workflows/build-apk.yml b/.github/workflows/build-apk.yml
+new file mode 100644
+index 0000000..10cb023
+--- /dev/null
++++ b/.github/workflows/build-apk.yml
+@@ -0,0 +1,214 @@
++name: Build Android APK
++
++# [FORK] Builds the魔改 APK from the `mods` branch.
++#
++# Everything the APK needs beyond the git tree is produced HERE, because
++# upstream deliberately does not commit build artifacts (see BUILDING.md):
++#   * proot + libtalloc          → deps/build_proot.sh          (NDK, cached)
++#   * Alpine aarch64 rootfs      → scripts/prepare_android_sandbox.sh (cached)
++#   * rclone.aar                 → scripts/fork/prepare-rclone.sh (gomobile,
++#                                  falls back to a 501 stub so one flaky Go
++#                                  build can't sink the whole APK)
++#   * provider-customization.properties → copied from the .example (empty values
++#                                  compile and run; only Claude OAuth needs a
++#                                  real value)
++
++on:
++  workflow_dispatch:
++    inputs:
++      build_type:
++        description: "Gradle build type"
++        type: choice
++        default: release
++        options: [release, debug]
++      rclone:
++        description: "rclone.aar (real = full remote backup, stub = disabled)"
++        type: choice
++        default: real
++        options: [real, stub]
++      make_release:
++        description: "Publish the APK as a GitHub Release"
++        type: boolean
++        default: true
++  push:
++    branches: [mods]
++    paths:
++      - "src/android/**"
++      - "src/shared/**"
++      - "deps/**"
++      - "scripts/**"
++      - ".github/workflows/build-apk.yml"
++
++permissions:
++  contents: write
++
++concurrency:
++  group: build-apk-${{ github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  build:
++    runs-on: ubuntu-latest
++    timeout-minutes: 90
++
++    env:
++      BUILD_TYPE: ${{ inputs.build_type || 'release' }}
++      RCLONE_MODE: ${{ inputs.rclone || 'real' }}
++      # Pinned via the fork's init script, NOT build.gradle.kts — see
++      # scripts/fork/ndk-version.init.gradle.kts.
++      FORK_NDK_VERSION: "28.1.13356709"
++
++    steps:
++      - name: Checkout (with submodules)
++        uses: actions/checkout@v4
++        with:
++          submodules: recursive
++          fetch-depth: 0
++
++      - name: Set up JDK 17
++        uses: actions/setup-java@v4
++        with:
++          distribution: temurin
++          java-version: "17"
++
++      - name: Set up Go (for the rclone gomobile binding)
++        if: env.RCLONE_MODE == 'real'
++        uses: actions/setup-go@v5
++        with:
++          go-version: "1.25"
++          cache: false
++
++      - name: Set up Android SDK
++        uses: android-actions/setup-android@v3
++
++      - name: Install NDK ${{ env.FORK_NDK_VERSION }} + CMake
++        run: |
++          set -eux
++          yes | sdkmanager --licenses >/dev/null 2>&1 || true
++          sdkmanager --install \
++            "ndk;${FORK_NDK_VERSION}" \
++            "cmake;3.22.1" \
++            "platforms;android-36" \
++            "build-tools;35.0.0"
++          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${FORK_NDK_VERSION}" >> "$GITHUB_ENV"
++          echo "ANDROID_NDK_ROOT=${ANDROID_SDK_ROOT}/ndk/${FORK_NDK_VERSION}" >> "$GITHUB_ENV"
++
++      - name: Build-time customization (empty values, as upstream ships)
++        run: |
++          set -eux
++          cp -n src/android/app/provider-customization.properties.example \
++                src/android/app/provider-customization.properties || true
++
++      # ── Native deps ────────────────────────────────────────────────────
++      # Keyed on the scripts + submodule commits: a change to either must
++      # invalidate the cache, otherwise a stale proot silently ships.
++      - name: Cache sandbox artifacts
++        id: cache-sandbox
++        uses: actions/cache@v4
++        with:
++          path: |
++            src/android/app/src/main/assets/proot-aarch64
++            src/android/app/src/main/assets/alpine-minirootfs.tar.gz
++            src/android/app/src/main/jniLibs/arm64-v8a/libproot.so
++            deps/build/proot-android
++            deps/talloc
++          key: sandbox-${{ runner.os }}-ndk${{ env.FORK_NDK_VERSION }}-${{ hashFiles('deps/build_proot.sh', 'scripts/prepare_android_sandbox.sh', '.gitmodules') }}-${{ hashFiles('.git/modules/deps/proot/HEAD') }}
++
++      - name: Build proot (+ libtalloc)
++        run: |
++          set -eux
++          # deps/build_proot.sh verifies the vendored Termux loaders with
++          # `shasum -a 256` (a macOS-ism). Ubuntu runners ship it via perl, but
++          # provide a shim if this image ever doesn't.
++          if ! command -v shasum >/dev/null 2>&1; then
++            sudo install -m 0755 scripts/fork/shasum-shim.sh /usr/local/bin/shasum
++          fi
++          bash deps/build_proot.sh
++
++      - name: Prepare Alpine rootfs asset
++        run: bash scripts/prepare_android_sandbox.sh
++
++      - name: Cache Go build (rclone)
++        if: env.RCLONE_MODE == 'real'
++        uses: actions/cache@v4
++        with:
++          path: |
++            ~/.cache/go-build
++            ~/go/pkg/mod
++            ~/go/bin
++          key: go-rclone-${{ runner.os }}-${{ hashFiles('deps/rclone-mobile/go.sum') }}
++
++      - name: Prepare rclone.aar (${{ env.RCLONE_MODE }})
++        run: bash scripts/fork/prepare-rclone.sh "${RCLONE_MODE}"
++
++      # ── Gradle ─────────────────────────────────────────────────────────
++      - name: Set up Gradle
++        uses: gradle/actions/setup-gradle@v4
++        with:
++          build-root-directory: src/android
++
++      - name: Assemble ${{ env.BUILD_TYPE }} APK
++        working-directory: src/android
++        run: |
++          set -eux
++          TASK="assembleRelease"
++          [ "$BUILD_TYPE" = "debug" ] && TASK="assembleDebug"
++          ./gradlew --no-daemon --stacktrace \
++            --init-script ../../scripts/fork/ndk-version.init.gradle.kts \
++            ":app:${TASK}"
++
++      - name: Locate and name the APK
++        id: apk
++        run: |
++          set -eux
++          APK="$(find src/android/app/build/outputs/apk -name '*.apk' -type f | head -1)"
++          test -n "$APK"
++          VER="$(grep -m1 'versionName' src/android/app/build.gradle.kts | sed 's/[^"]*"\([^"]*\)".*/\1/')"
++          SHORT="$(git rev-parse --short HEAD)"
++          NAME="OpenMinis-mods-${VER}-${SHORT}-arm64-v8a.apk"
++          mkdir -p dist && cp "$APK" "dist/${NAME}"
++          echo "path=dist/${NAME}" >> "$GITHUB_OUTPUT"
++          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
++          echo "version=${VER}" >> "$GITHUB_OUTPUT"
++          echo "short=${SHORT}" >> "$GITHUB_OUTPUT"
++          {
++            echo "## APK"
++            echo "- \`${NAME}\`"
++            echo "- size: $(du -h "dist/${NAME}" | cut -f1)"
++            echo "- upstream version: ${VER}"
++          } >> "$GITHUB_STEP_SUMMARY"
++
++      - name: Upload artifact
++        uses: actions/upload-artifact@v4
++        with:
++          name: ${{ steps.apk.outputs.name }}
++          path: ${{ steps.apk.outputs.path }}
++          retention-days: 30
++
++      - name: Publish GitHub Release
++        if: ${{ inputs.make_release }}
++        env:
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++          APK_PATH: ${{ steps.apk.outputs.path }}
++          APK_VERSION: ${{ steps.apk.outputs.version }}
++          APK_SHORT: ${{ steps.apk.outputs.short }}
++        run: |
++          set -eux
++          TAG="mods-${APK_VERSION}-${APK_SHORT}"
++          # Notes go through a file rather than an inline multi-line argument:
++          # a `\`-continued shell command with an embedded newline inside a
++          # quoted string is exactly the shape that makes this YAML unparseable.
++          cat > /tmp/notes.md <<NOTES
++          自动构建于 \`mods\` 分支（上游 ${APK_VERSION}）。
++
++          魔改内容：
++          - 服务商页面底部固定「配置 / 模型」双标签
++          - 模型改为手动「获取模型」+ 勾选添加，不再一键灌入全部模型
++          - 添加服务商时即可填写自定义 User-Agent
++          - API Key 全量明文显示、可换行，编辑态按钮为 取消 · 复制 · 保存
++          NOTES
++          sed -i 's/^          //' /tmp/notes.md
++          gh release create "$TAG" "$APK_PATH" \
++            --title "魔改版 ${APK_VERSION} (${APK_SHORT})" \
++            --notes-file /tmp/notes.md \
++            || gh release upload "$TAG" "$APK_PATH" --clobber
+diff --git a/.github/workflows/sync-upstream.yml b/.github/workflows/sync-upstream.yml
+new file mode 100644
+index 0000000..42dd3a5
+--- /dev/null
++++ b/.github/workflows/sync-upstream.yml
+@@ -0,0 +1,159 @@
++name: Sync Upstream
++
++# [FORK] Rebase the魔改 onto a newer upstream release.
++#
++# Contract:
++#   main   — pure upstream mirror, fast-forward only. Never hand-edited.
++#   mods   — our patches, always rebased onto upstream/main. History IS rewritten
++#            (that is what "a patch series against current upstream" means).
++#   patches/ — .patch snapshot of `mods` after every successful sync, so a future
++#            conflict can be inspected patch-by-patch instead of archaeologically.
++#
++# On conflict nothing is force-pushed: the conflicting state is pushed to
++# `rebase-failed/<upstream-sha>` and an Issue is opened listing the files.
++
++on:
++  workflow_dispatch:
++    inputs:
++      upstream_ref:
++        description: "Upstream ref to sync to (branch, tag or SHA)"
++        default: "main"
++      dry_run:
++        description: "Rebase and report, but do not push"
++        type: boolean
++        default: false
++  schedule:
++    # 03:20 UTC ≈ 11:20 Asia/Shanghai, Mondays.
++    - cron: "20 3 * * 1"
++
++permissions:
++  contents: write
++  issues: write
++
++concurrency:
++  group: sync-upstream
++  cancel-in-progress: false
++
++jobs:
++  sync:
++    runs-on: ubuntu-latest
++    timeout-minutes: 30
++
++    env:
++      UPSTREAM_URL: https://github.com/OpenMinis/OpenMinis.git
++      UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
++      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
++
++    steps:
++      - name: Checkout mods
++        uses: actions/checkout@v4
++        with:
++          ref: mods
++          fetch-depth: 0
++          persist-credentials: true
++
++      - name: Configure git
++        run: |
++          git config user.name "fork-sync[bot]"
++          git config user.email "fork-sync@users.noreply.github.com"
++
++      - name: Fetch upstream
++        id: fetch
++        run: |
++          set -eux
++          git remote add upstream "$UPSTREAM_URL" 2>/dev/null || \
++            git remote set-url upstream "$UPSTREAM_URL"
++          git fetch upstream --tags --prune
++          TARGET="$(git rev-parse "upstream/${UPSTREAM_REF}" 2>/dev/null || git rev-parse "${UPSTREAM_REF}")"
++          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
++          echo "short=$(git rev-parse --short "$TARGET")" >> "$GITHUB_OUTPUT"
++          BASE="$(git merge-base HEAD "$TARGET" || true)"
++          if [ "$BASE" = "$TARGET" ]; then
++            echo "uptodate=yes" >> "$GITHUB_OUTPUT"
++          else
++            echo "uptodate=no" >> "$GITHUB_OUTPUT"
++          fi
++          {
++            echo "## Upstream"
++            echo "- ref: \`${UPSTREAM_REF}\` → \`$(git rev-parse --short "$TARGET")\`"
++            echo "- subject: $(git log -1 --format=%s "$TARGET")"
++          } >> "$GITHUB_STEP_SUMMARY"
++
++      - name: Already up to date
++        if: steps.fetch.outputs.uptodate == 'yes'
++        run: echo "- mods already contains this upstream ref; nothing to do." >> "$GITHUB_STEP_SUMMARY"
++
++      - name: Rebase mods onto upstream
++        if: steps.fetch.outputs.uptodate == 'no'
++        id: rebase
++        run: |
++          set -x
++          # The fork's commits are exactly those not in upstream's history.
++          COUNT="$(git rev-list --count "${{ steps.fetch.outputs.target }}..HEAD")"
++          echo "- fork commits to replay: ${COUNT}" >> "$GITHUB_STEP_SUMMARY"
++
++          if git rebase "${{ steps.fetch.outputs.target }}"; then
++            echo "ok=yes" >> "$GITHUB_OUTPUT"
++            exit 0
++          fi
++
++          echo "ok=no" >> "$GITHUB_OUTPUT"
++          {
++            echo "### ⚠️ Rebase conflict"
++            echo ""
++            echo "Conflicting paths:"
++            echo '```'
++            git diff --name-only --diff-filter=U || true
++            echo '```'
++          } >> "$GITHUB_STEP_SUMMARY"
++          git diff --name-only --diff-filter=U > /tmp/conflicts.txt || true
++          # Leave the working tree mid-rebase so the branch push below captures it.
++          exit 0
++
++      - name: Push conflict state + open issue
++        if: steps.rebase.outputs.ok == 'no'
++        env:
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++        run: |
++          set -eux
++          BRANCH="rebase-failed/${{ steps.fetch.outputs.short }}"
++          # Commit the conflict markers verbatim — the point is to hand a human
++          # an inspectable tree, not a clean one.
++          git add -A
++          git commit -m "wip: rebase conflict onto upstream ${{ steps.fetch.outputs.short }}" || true
++          git push -f origin "HEAD:refs/heads/${BRANCH}"
++          BODY="$(printf '自动 rebase 到上游 `%s` 失败。\n\n冲突文件：\n```\n%s\n```\n\n冲突现场已推到分支 `%s`。\n\n处理方式见 docs/FORK.md §4：原则是**上游实现优先**，我们只在新的上游代码上重新打同样的挂钩。\n' \
++            "${{ steps.fetch.outputs.short }}" "$(cat /tmp/conflicts.txt 2>/dev/null || echo unknown)" "$BRANCH")"
++          gh issue create \
++            --title "同步失败：rebase 到上游 ${{ steps.fetch.outputs.short }} 有冲突" \
++            --body "$BODY" \
++            --label "upstream-sync" || echo "$BODY"
++          exit 1
++
++      - name: Export patch snapshot
++        if: steps.rebase.outputs.ok == 'yes'
++        run: |
++          set -eux
++          bash scripts/fork/export-patches.sh "${{ steps.fetch.outputs.target }}"
++          git add patches
++          git commit -m "chore(fork): refresh patch snapshot for upstream ${{ steps.fetch.outputs.short }}" || true
++
++      - name: Push
++        if: steps.rebase.outputs.ok == 'yes' && env.DRY_RUN == 'no'
++        run: |
++          set -eux
++          # main tracks upstream verbatim.
++          git push origin "${{ steps.fetch.outputs.target }}:refs/heads/main" --force
++          # mods was rebased, so its history changed by definition.
++          git push --force-with-lease origin HEAD:refs/heads/mods
++          {
++            echo "### ✅ Synced"
++            echo "- \`main\` → upstream \`${{ steps.fetch.outputs.short }}\`"
++            echo "- \`mods\` rebased and force-pushed"
++            echo ""
++            echo "下一步：Actions → **Build Android APK** 出包。"
++          } >> "$GITHUB_STEP_SUMMARY"
++
++      - name: Dry run summary
++        if: steps.rebase.outputs.ok == 'yes' && env.DRY_RUN == 'yes'
++        run: echo "### ✅ Rebase succeeded (dry run — nothing pushed)" >> "$GITHUB_STEP_SUMMARY"
+diff --git a/.gitignore b/.gitignore
+index 0077225..6283e5c 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -146,3 +146,7 @@ deps/lame-3.100/**/.deps/
+ # not a vendored binary — same treatment as the iOS Rclone.xcframework it is
+ # built alongside (deps/build_rclone_ios.sh).
+ src/android/app/libs/rclone.aar
++
++# [FORK] rclone.aar is produced by scripts/fork/prepare-rclone.sh at build time
++# (real gomobile build, or a 501 stub). Never commit it — see docs/FORK.md §5.
++deps/build/rclone-stub/
+diff --git a/docs/FORK.md b/docs/FORK.md
+new file mode 100644
+index 0000000..3cb9f69
+--- /dev/null
++++ b/docs/FORK.md
+@@ -0,0 +1,137 @@
++# Fork 维护手册（oh5uosnvh/OpenMinis）
++
++本 fork 的目标：**在上游 OpenMinis/OpenMinis 持续更新的前提下，用最小改动快速产出带私有魔改的 APK。**
++
++为此，改动不以「一堆散落的编辑」形式存在，而是一串**可以重放到任意上游版本之上的补丁**（patch series）。
++
++---
++
++## 1. 分支模型
++
++| 分支 | 角色 | 谁来写 |
++|---|---|---|
++| `main` | **纯上游镜像**。永不手改，只由 sync workflow fast-forward 到 `upstream/main` | 自动 |
++| `mods` | **我们的全部改动**，始终 rebase 在 `upstream/main` 之上。CI 从这里构建 APK。**这是本 fork 的默认分支** | 人 + CI |
++| `patches/` | 每次成功同步后自动导出的 `.patch` 快照（rebase 失败时的救生艇） | 自动 |
++
++`mods` 被设为**默认分支**，原因是 GitHub 的硬性限制：`workflow_dispatch`（手动点 Run
++workflow）只认默认分支上的 workflow 文件。如果默认分支是纯净的 `main`，那我们的
++CI 就必须把 workflow 也塞进 `main`，`main` 就不再是纯镜像了。把默认分支换成
++`mods` 同时满足两件事：手动触发可用，`main` 保持逐字节等于上游。
++
++`mods` 是一条**会被改写历史的分支**（rebase → force-push）。这是设计使然，不是事故：
++它代表「相对于当前上游的改动集」，而不是一条线性开发史。
++
++```
++upstream/main ──●──●──●──●  (1.13)          ──●──●──●  (1.14)
++                          ╲                          ╲
++mods                       ●─●─●  (我们的 4 个补丁)    ●─●─●  (rebase 后同样 4 个补丁)
++```
++
++---
++
++## 2. 上游发新版时怎么做
++
++### 方式 A：GitHub Actions（推荐，零本地环境）
++
++1. Actions → **Sync Upstream** → Run workflow
++2. 成功：`main` 前进、`mods` 自动 rebase 并 force-push、`patches/` 更新
++3. 失败：workflow 会创建一个 Issue，列出冲突文件，并把冲突现场推到
++   `rebase-failed/<上游sha>` 分支供手工解决
++4. 然后 Actions → **Build Android APK** → Run workflow 出包
++
++### 方式 B：本地
++
++```sh
++# 一条命令完成 fetch + main 前进 + mods rebase + 导出 patches
++./scripts/fork/sync-upstream.sh
++
++# 只导出补丁快照
++./scripts/fork/export-patches.sh
++```
++
++---
++
++## 3. 降冲突的三条硬规则
++
++写任何新功能前先读这一节。违反它 = 每次上游更新都要手工合并。
++
++### 规则 1：新功能写进**新文件**
++
++新增 UI/逻辑一律建新文件（本 fork 的魔改文件统一带 `Mods` 后缀或放在 `mods/` 包下）。
++新文件永远不会和上游冲突 —— 上游不认识它。
++
++### 规则 2：上游文件里只留「加参数 + 默认值」式挂钩
++
++允许：
++
++```kotlin
++fun ProviderDetailScreen(
++    instanceId: String,
++    // ...上游原有参数...
++    showModelsSection: Boolean = true,   // ← fork 挂钩：加参数 + 默认值
++) {
++```
++
++禁止：重排上游代码块、改上游函数签名的既有参数顺序、大段搬移。
++Git 三方合并对「在参数列表末尾加一行」几乎不会冲突；对「搬移代码块」几乎必然冲突。
++
++### 规则 3：挂钩点必须登记在案
++
++**当前 fork 触碰的上游文件（冲突面全集）：**
++
++| 上游文件 | 改动 | 说明 |
++|---|---|---|
++| `ui/settings/ProviderDetailScreen.kt` | 末尾加 4 个带默认值的参数（`showModelsSection` / `bottomBar` / `showBackArrow` / `title`）；模型区块包一层 `if`；`ApiKeyCredentialBlock` 改为全量明文 + 复制按钮 | 模型区块交给「模型」Tab 渲染 |
++| `ui/settings/AddProviderScreen.kt` | Endpoint 段内新增自定义 UA 输入；Key 输入改明文换行；保存时写入 UA + 手动标记，去掉自动全量拉取 | 修上游「添加时没有 UA、添加完才冒出来」的反人类逻辑 |
++| `ui/settings/SettingsComponents.kt` | `SettingsScaffold` 加 `bottomBar` 参数（带默认值） | 底部 Tab 的唯一挂钩点 |
++| `ui/navigation/AppNavigation.kt` | `PROVIDER_DETAIL` 路由改指向 `ProviderDetailTabbedScreen` | 1 处 |
++| `data/repository/ProviderRepository.kt` | `autoRefreshModels` 开头加手动策略跳过 | 防止后台刷新回灌全部模型 |
++
++**fork 独有的新文件（零冲突）：**
++
++- `ui/settings/mods/ProviderDetailTabs.kt` —— 底部「配置 / 模型」固定 Tab + 能力标签
++- `ui/settings/mods/ProviderDetailTabbedScreen.kt` —— Tab 宿主，配置页直接复用上游实现
++- `ui/settings/mods/ProviderModelsTab.kt` —— kelive 风格模型管理页
++- `ui/settings/mods/ProviderModelsFetchSheet.kt` —— 获取模型 + 勾选面板
++- `ui/settings/mods/ProviderCatalogFetcher.kt` —— 只读目录抓取（fetch 与写入分离）
++- `ui/settings/mods/ForkModelPolicy.kt` —— 「此服务商模型由用户手动管理」标记
++- `res/values*/strings_fork.xml` —— fork 专属文案，**不碰上游 strings.xml**
++- `.github/workflows/*.yml`、`scripts/fork/*`、`docs/FORK.md`
++
++上游改了上表四个文件的**同一区域**时才会冲突。真冲突了，按 §4 处理。
++
++---
++
++## 4. rebase 冲突了怎么办
++
++```sh
++git checkout mods
++git rebase upstream/main
++# 冲突：
++git status                     # 看哪些文件
++# 解决后
++git add <files> && git rebase --continue
++```
++
++判断原则：**上游的实现优先**。我们的补丁只应保留「挂钩 + 新文件引用」，
++如果上游把某段逻辑重写了，就在新的上游代码上重新打一次同样的挂钩，
++而不是把上游代码回退成旧版。
++
++救生艇：`patches/` 下有上一次成功状态的 `.patch`，可以 `git am -3` 逐个重放，
++比在 rebase 冲突现场硬啃更容易看清「我们到底改了什么」。
++
++---
++
++## 5. 构建产物
++
++- Workflow：**Build Android APK**（`.github/workflows/build-apk.yml`）
++- 原生依赖在 CI 里现建 + 缓存：
++  - `deps/build_proot.sh` → `libproot.so` + 两个 loader（NDK 交叉编译）
++  - `scripts/prepare_android_sandbox.sh` → Alpine rootfs 资产
++  - `deps/build_rclone_android.sh` → `rclone.aar`（gomobile；失败时自动降级为
++    stub，只影响远程备份，其余功能不受影响，构建摘要里会写明）
++- `provider-customization.properties` 用 example 空值填充：**能编译能跑**，
++  只有 Claude OAuth 登录这一条路径需要真值（详见 `BUILDING.md`）。
++- 不修改 `build.gradle.kts` 里的 `versionCode`/`versionName` —— 那是高频冲突点。
++  APK 文件名由 CI 用 `git describe` 生成，版本号跟随上游。
+diff --git a/scripts/fork/export-patches.sh b/scripts/fork/export-patches.sh
+new file mode 100755
+index 0000000..be80280
+--- /dev/null
++++ b/scripts/fork/export-patches.sh
+@@ -0,0 +1,64 @@
++#!/usr/bin/env bash
++# [FORK] Export the fork's commits as a .patch series under patches/.
++#
++# Why keep patches in the repo at all, when git already has the commits?
++# Because after a rebase-with-conflicts the commits are the thing you can no
++# longer read cleanly. A flat, reviewable series answers "what did we actually
++# change?" in seconds, and `git am -3` can replay it onto any upstream tree
++# when a rebase gets too tangled to salvage.
++#
++# Usage:
++#   export-patches.sh [upstream-ref]     # default: upstream/main
++set -euo pipefail
++
++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
++cd "$ROOT"
++
++BASE="${1:-upstream/main}"
++OUT="patches"
++
++if ! git rev-parse --verify "$BASE" >/dev/null 2>&1; then
++  echo "error: '$BASE' is not a valid ref. Add the upstream remote first:" >&2
++  echo "  git remote add upstream https://github.com/OpenMinis/OpenMinis.git && git fetch upstream" >&2
++  exit 1
++fi
++
++MERGE_BASE="$(git merge-base HEAD "$BASE")"
++COUNT="$(git rev-list --count "${MERGE_BASE}..HEAD")"
++
++rm -rf "$OUT"
++mkdir -p "$OUT"
++
++if [ "$COUNT" -eq 0 ]; then
++  echo "no fork commits on top of $BASE — nothing to export"
++  printf 'No fork commits relative to %s (%s).\n' "$BASE" "$(git rev-parse --short "$MERGE_BASE")" > "$OUT/README.md"
++  exit 0
++fi
++
++git format-patch --no-signature -o "$OUT" "${MERGE_BASE}..HEAD" >/dev/null
++
++{
++  echo "# Fork patch series"
++  echo
++  echo "Generated by \`scripts/fork/export-patches.sh\` — do not hand-edit."
++  echo
++  echo "- upstream base: \`$(git rev-parse --short "$MERGE_BASE")\` ($(git log -1 --format=%s "$MERGE_BASE"))"
++  echo "- patches: ${COUNT}"
++  echo
++  echo "Replay onto a fresh upstream checkout:"
++  echo
++  echo '```sh'
++  echo "git am -3 patches/*.patch"
++  echo '```'
++  echo
++  echo "## Commits"
++  echo
++  git log --reverse --format='- `%h` %s' "${MERGE_BASE}..HEAD"
++  echo
++  echo "## Files touched"
++  echo
++  git diff --stat "${MERGE_BASE}..HEAD" | sed 's/^/    /'
++} > "$OUT/README.md"
++
++echo "exported ${COUNT} patch(es) to ${OUT}/"
++ls -1 "$OUT"
+diff --git a/scripts/fork/ndk-version.init.gradle.kts b/scripts/fork/ndk-version.init.gradle.kts
+new file mode 100644
+index 0000000..93c6fbc
+--- /dev/null
++++ b/scripts/fork/ndk-version.init.gradle.kts
+@@ -0,0 +1,41 @@
++// [FORK] Pin the NDK the Android build uses, WITHOUT editing build.gradle.kts.
++//
++// The app module declares an externalNativeBuild (pty_bridge, the crash
++// handler, jieba_jni) but does not set `ndkVersion`, so AGP falls back to its
++// own default version and fails the build if that exact version is not
++// installed. Pinning it in build.gradle.kts would work but puts the fork's edit
++// in a file upstream touches on nearly every release — a permanent merge
++// conflict for one line of CI plumbing.
++//
++// An init script is applied with `--init-script` from OUTSIDE the project, so
++// this file is invisible to git's view of the upstream tree: zero conflict
++// surface (docs/FORK.md §3 规则 1).
++//
++// Usage:
++//   FORK_NDK_VERSION=28.1.13356709 \
++//     ./gradlew --init-script ../../scripts/fork/ndk-version.init.gradle.kts :app:assembleRelease
++//
++// No FORK_NDK_VERSION → no-op, so a local build behaves exactly like upstream.
++
++val forkNdkVersion: String? = System.getenv("FORK_NDK_VERSION")?.takeIf { it.isNotBlank() }
++
++if (forkNdkVersion != null) {
++    gradle.beforeProject {
++        plugins.withId("com.android.application") {
++            extensions.findByName("android")?.let { ext ->
++                // Reflection rather than a typed cast: this init script is
++                // compiled without AGP on its classpath, so
++                // `com.android.build.api.dsl.ApplicationExtension` is not a
++                // resolvable type here.
++                runCatching {
++                    ext.javaClass.methods
++                        .first { it.name == "setNdkVersion" && it.parameterCount == 1 }
++                        .invoke(ext, forkNdkVersion)
++                    logger.lifecycle("[fork] ndkVersion pinned to $forkNdkVersion for $path")
++                }.onFailure {
++                    logger.warn("[fork] could not pin ndkVersion: ${it.message}")
++                }
++            }
++        }
++    }
++}
+diff --git a/scripts/fork/prepare-rclone.sh b/scripts/fork/prepare-rclone.sh
+new file mode 100755
+index 0000000..170c811
+--- /dev/null
++++ b/scripts/fork/prepare-rclone.sh
+@@ -0,0 +1,190 @@
++#!/usr/bin/env bash
++# [FORK] Make `rclone.aar` available to the Gradle build.
++#
++# `src/android/app/build.gradle.kts` declares
++#     implementation(group = "", name = "rclone", ext = "aar")
++# resolved from the flatDir repo `app/libs`. Upstream treats that .aar as a
++# BUILD ARTIFACT (it is gitignored), produced by `deps/build_rclone_android.sh`
++# via gomobile. Without it the build fails at configuration time — before a
++# single line of Kotlin is compiled — so CI must produce something.
++#
++# Two modes:
++#
++#   real  (default) Build it for real with gomobile. Needs Go + the NDK and a
++#         few minutes on a cold module cache. Full remote-backup support.
++#   stub  Synthesise a minimal .aar exposing the exact gomobile-generated API
++#         surface (com.openminis.rclone.gomobile.Gomobile / RcloneRPCResult)
++#         with every RPC answering HTTP 501. The app compiles and runs; ONLY
++#         remote backup destinations (SMB/WebDAV/SFTP/S3/FTP) are unavailable,
++#         and they fail with a clear message instead of crashing.
++#
++# `real` automatically falls back to `stub` so a Go/gomobile hiccup degrades one
++# feature instead of failing the whole APK build. The chosen mode is written to
++# $GITHUB_STEP_SUMMARY when running in Actions.
++#
++# Usage: prepare-rclone.sh [real|stub]
++set -uo pipefail
++
++MODE="${1:-real}"
++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
++LIBS_DIR="$ROOT/src/android/app/libs"
++OUT_AAR="$LIBS_DIR/rclone.aar"
++WORK="$ROOT/deps/build/rclone-stub"
++
++mkdir -p "$LIBS_DIR"
++
++note() {
++  echo "[prepare-rclone] $*"
++  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
++    echo "- rclone: $*" >> "$GITHUB_STEP_SUMMARY"
++  fi
++}
++
++build_real() {
++  command -v go >/dev/null 2>&1 || { echo "[prepare-rclone] no go toolchain"; return 1; }
++
++  if ! command -v gomobile >/dev/null 2>&1; then
++    echo "[prepare-rclone] installing gomobile/gobind…"
++    go install golang.org/x/mobile/cmd/gomobile@latest || return 1
++    go install golang.org/x/mobile/cmd/gobind@latest || return 1
++    export PATH="$PATH:$(go env GOPATH)/bin"
++  fi
++
++  bash "$ROOT/deps/build_rclone_android.sh" || return 1
++
++  local built="$ROOT/deps/build/rclone/rclone.aar"
++  [ -f "$built" ] || return 1
++  cp -f "$built" "$OUT_AAR"
++  return 0
++}
++
++build_stub() {
++  command -v javac >/dev/null 2>&1 || {
++    echo "[prepare-rclone] FATAL: javac not found; cannot even build the stub" >&2
++    return 1
++  }
++  rm -rf "$WORK"
++  mkdir -p "$WORK/src/com/openminis/rclone/gomobile" "$WORK/classes" "$WORK/aar"
++
++  # The API shape is dictated by gomobile's binding of
++  # deps/rclone-mobile/gomobile/gomobile.go:
++  #   func RcloneInitialize()            -> static void rcloneInitialize()
++  #   func RcloneFinalize()              -> static void rcloneFinalize()
++  #   type RcloneRPCResult{Output string; Status int}
++  #                                      -> getOutput():String / getStatus():long
++  #                                         (gobind maps Go int to Java long)
++  #   func RcloneRPC(m, in string) *RcloneRPCResult
++  # Keep these signatures byte-compatible or RcloneBridge.kt stops compiling.
++  cat > "$WORK/src/com/openminis/rclone/gomobile/RcloneRPCResult.java" <<'JAVA'
++package com.openminis.rclone.gomobile;
++
++/** Stub mirror of the gomobile-generated result type. */
++public final class RcloneRPCResult {
++    private String output;
++    private long status;
++
++    public RcloneRPCResult() {
++    }
++
++    public RcloneRPCResult(String output, long status) {
++        this.output = output;
++        this.status = status;
++    }
++
++    public String getOutput() {
++        return output;
++    }
++
++    public void setOutput(String value) {
++        this.output = value;
++    }
++
++    public long getStatus() {
++        return status;
++    }
++
++    public void setStatus(long value) {
++        this.status = value;
++    }
++}
++JAVA
++
++  cat > "$WORK/src/com/openminis/rclone/gomobile/Gomobile.java" <<'JAVA'
++package com.openminis.rclone.gomobile;
++
++/**
++ * Stub of the gomobile rclone binding.
++ *
++ * This build was produced WITHOUT the real rclone library, so every RPC answers
++ * HTTP 501 with a JSON error. RcloneBridge turns a non-200 status into
++ * RPCException carrying the `error` field, which the backup UI already surfaces
++ * — so remote destinations report "unavailable in this build" instead of
++ * crashing, and every other feature is unaffected.
++ */
++public final class Gomobile {
++    private Gomobile() {
++    }
++
++    private static final String ERROR_JSON =
++        "{\"error\":\"rclone is not bundled in this build; remote backup destinations are unavailable\"}";
++
++    public static void rcloneInitialize() {
++    }
++
++    public static void rcloneFinalize() {
++    }
++
++    public static RcloneRPCResult rcloneRPC(String method, String input) {
++        return new RcloneRPCResult(ERROR_JSON, 501L);
++    }
++}
++JAVA
++
++  javac -source 17 -target 17 -nowarn \
++        -d "$WORK/classes" \
++        "$WORK/src/com/openminis/rclone/gomobile/RcloneRPCResult.java" \
++        "$WORK/src/com/openminis/rclone/gomobile/Gomobile.java" || return 1
++
++  ( cd "$WORK/classes" && jar cf "$WORK/aar/classes.jar" . ) || return 1
++
++  cat > "$WORK/aar/AndroidManifest.xml" <<'XML'
++<?xml version="1.0" encoding="utf-8"?>
++<manifest xmlns:android="http://schemas.android.com/apk/res/android"
++    package="com.openminis.rclone">
++    <uses-sdk android:minSdkVersion="26" />
++</manifest>
++XML
++
++  mkdir -p "$WORK/aar/res"
++  # An .aar is just a zip: manifest + classes.jar + (empty) res/ + R.txt.
++  : > "$WORK/aar/R.txt"
++  ( cd "$WORK/aar" && rm -f "$OUT_AAR" && jar cfM "$OUT_AAR" AndroidManifest.xml classes.jar R.txt res ) || return 1
++  return 0
++}
++
++if [ -f "$OUT_AAR" ] && [ "${FORK_RCLONE_FORCE:-0}" != "1" ]; then
++  note "reusing existing $(basename "$OUT_AAR") ($(du -h "$OUT_AAR" | cut -f1))"
++  exit 0
++fi
++
++case "$MODE" in
++  stub)
++    build_stub || exit 1
++    note "**stub** — remote backup destinations disabled in this APK"
++    ;;
++  real)
++    if build_real; then
++      note "real gomobile build ($(du -h "$OUT_AAR" | cut -f1)) — full remote backup support"
++    else
++      echo "[prepare-rclone] real build failed; falling back to stub" >&2
++      build_stub || exit 1
++      note "**stub (fallback)** — the gomobile build failed, so remote backup destinations are disabled in this APK. Everything else is unaffected."
++    fi
++    ;;
++  *)
++    echo "usage: $0 [real|stub]" >&2
++    exit 2
++    ;;
++esac
++
++ls -lh "$OUT_AAR"
+diff --git a/scripts/fork/shasum-shim.sh b/scripts/fork/shasum-shim.sh
+new file mode 100755
+index 0000000..0c4a09d
+--- /dev/null
++++ b/scripts/fork/shasum-shim.sh
+@@ -0,0 +1,28 @@
++#!/usr/bin/env bash
++# [FORK] Minimal `shasum` stand-in for Linux CI.
++#
++# deps/build_proot.sh verifies the vendored Termux loaders with
++# `shasum -a 256 <file>`. That command is standard on macOS (where upstream
++# develops) but is not guaranteed on a Linux runner image. Map it onto
++# coreutils' sha256sum, keeping the "<hash>  <path>" output shape the script's
++# `awk '{print $1}'` expects.
++set -euo pipefail
++
++algo=256
++args=()
++while [ $# -gt 0 ]; do
++  case "$1" in
++    -a) algo="$2"; shift 2 ;;
++    -a*) algo="${1#-a}"; shift ;;
++    *) args+=("$1"); shift ;;
++  esac
++done
++
++case "$algo" in
++  1)   exec sha1sum "${args[@]}" ;;
++  224) exec sha224sum "${args[@]}" ;;
++  256) exec sha256sum "${args[@]}" ;;
++  384) exec sha384sum "${args[@]}" ;;
++  512) exec sha512sum "${args[@]}" ;;
++  *)   echo "shasum-shim: unsupported algorithm $algo" >&2; exit 2 ;;
++esac
+diff --git a/scripts/fork/sync-upstream.sh b/scripts/fork/sync-upstream.sh
+new file mode 100755
+index 0000000..dc3992d
+--- /dev/null
++++ b/scripts/fork/sync-upstream.sh
+@@ -0,0 +1,85 @@
++#!/usr/bin/env bash
++# [FORK] Local equivalent of the Sync Upstream workflow.
++#
++#   main   ← fast-forwarded to upstream (pure mirror, never hand-edited)
++#   mods   ← rebased on top of it (our patch series)
++#   patches/ ← refreshed snapshot
++#
++# Nothing is pushed unless you pass --push, so you can inspect the result first.
++#
++# Usage:
++#   scripts/fork/sync-upstream.sh [upstream-ref] [--push]
++set -euo pipefail
++
++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
++cd "$ROOT"
++
++REF="main"
++PUSH="no"
++for arg in "$@"; do
++  case "$arg" in
++    --push) PUSH="yes" ;;
++    *) REF="$arg" ;;
++  esac
++done
++
++info() { printf '\033[0;34m[sync]\033[0m %s\n' "$*"; }
++fail() { printf '\033[0;31m[sync]\033[0m %s\n' "$*" >&2; exit 1; }
++
++git remote get-url upstream >/dev/null 2>&1 || \
++  git remote add upstream https://github.com/OpenMinis/OpenMinis.git
++
++info "fetching upstream…"
++git fetch upstream --tags --prune
++
++TARGET="$(git rev-parse "upstream/${REF}" 2>/dev/null || git rev-parse "$REF")"
++info "target: $(git rev-parse --short "$TARGET")  $(git log -1 --format=%s "$TARGET")"
++
++# Refuse to operate on a dirty tree — a rebase would either fail confusingly or
++# quietly fold uncommitted work into the series.
++if [ -n "$(git status --porcelain)" ]; then
++  fail "working tree is dirty; commit or stash first"
++fi
++
++CURRENT="$(git rev-parse --abbrev-ref HEAD)"
++if [ "$CURRENT" != "mods" ]; then
++  info "switching to mods (was $CURRENT)"
++  git checkout mods
++fi
++
++BEFORE="$(git rev-parse HEAD)"
++COUNT="$(git rev-list --count "${TARGET}..HEAD")"
++info "fork commits to replay: ${COUNT}"
++
++if [ "$(git merge-base HEAD "$TARGET")" = "$TARGET" ]; then
++  info "mods already contains this upstream ref — nothing to rebase"
++else
++  info "rebasing…"
++  if ! git rebase "$TARGET"; then
++    echo
++    fail "rebase conflict. Resolve, then: git add <files> && git rebase --continue
++Guidance: docs/FORK.md §4 — upstream's implementation wins; re-apply our hook on
++top of the new upstream code rather than reverting theirs.
++Abort with: git rebase --abort  (mods returns to ${BEFORE:0:8})"
++  fi
++fi
++
++info "updating local main to upstream…"
++git branch -f main "$TARGET"
++
++info "refreshing patch snapshot…"
++bash scripts/fork/export-patches.sh "$TARGET"
++if [ -n "$(git status --porcelain patches)" ]; then
++  git add patches
++  git commit -m "chore(fork): refresh patch snapshot for upstream $(git rev-parse --short "$TARGET")"
++fi
++
++if [ "$PUSH" = "yes" ]; then
++  info "pushing…"
++  git push origin "main:main" --force
++  git push --force-with-lease origin mods:mods
++  info "pushed. Next: Actions → Build Android APK"
++else
++  info "done (nothing pushed). Review with:  git log --oneline ${TARGET}..HEAD"
++  info "then:  scripts/fork/sync-upstream.sh ${REF} --push"
++fi

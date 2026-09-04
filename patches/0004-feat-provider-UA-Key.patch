@@ -1,0 +1,187 @@
+From 1f18dda991dfc91277cc439144284f9eb1e179a9 Mon Sep 17 00:00:00 2001
+From: oh5uosnvh <oh5uosnvh@users.noreply.github.com>
+Date: Fri, 4 Sep 2026 10:28:48 +0800
+Subject: [PATCH 4/4] =?UTF-8?q?feat(provider):=20=E6=B7=BB=E5=8A=A0?=
+ =?UTF-8?q?=E6=9C=8D=E5=8A=A1=E5=95=86=E6=97=B6=E5=8D=B3=E5=8F=AF=E5=A1=AB?=
+ =?UTF-8?q?=20UA=EF=BC=8CKey=20=E5=85=A8=E9=87=8F=E6=98=8E=E6=96=87?=
+ =?UTF-8?q?=E6=98=BE=E7=A4=BA?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+自定义 User-Agent 前移到「添加服务商」页
+  上游只在 ProviderDetailScreen 暴露这个字段，也就是服务商已经建好之后：你
+  添加服务商 → 第一次模型刷新用默认 UA 发出去 → 网关拒了 → 再点进这个服务商
+  才发现 apiURL 下面多出一个你从没见过的「自定义 User-Agent」。对于只放行官方
+  客户端 UA 的网关，这个顺序是反的 —— 值必须在第一个请求之前就位，而不是失败
+  之后。
+  放在 API base 正下方（它本来就属于那里），门槛与上游详情页一致：仅
+  OpenAI / Anthropic 兼容协议（中转场景）。留空 → null → 默认 UA，所以不碰
+  这个字段的人行为与上游逐字节相同。
+
+Key 输入改为明文换行
+  上游用 PasswordVisualTransformation + 单行输入。手机上这是净亏：这个值是
+  用户刚从服务商控制台粘过来的，日常需要拿眼睛核对（粘贴有没有截断？这是中转
+  的 key 还是官方的？），而单行 + 掩码让它连显示态都是一条没人读得懂的横向
+  滚动。威胁模型也不支持掩码 —— 这是设备锁屏后面的应用设置页，不是共享屏幕。
+  singleLine = false 且不加 VisualTransformation 才会换行；等宽字体让逐字符
+  比对成为可能。
+
+配合模型改动：保存时写入 UA，并标记该实例为手动管理模型，然后不再自动全量
+拉取（详见前一个提交与 ForkModelPolicy 的说明）。
+---
+ .../app/ui/settings/AddProviderScreen.kt      | 95 +++++++++++++++----
+ 1 file changed, 79 insertions(+), 16 deletions(-)
+
+diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/AddProviderScreen.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/AddProviderScreen.kt
+index 9b1f29a..4416b38 100644
+--- a/src/android/app/src/main/java/com/openminis/app/ui/settings/AddProviderScreen.kt
++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/AddProviderScreen.kt
+@@ -499,13 +499,29 @@ private fun ColumnScope.ApiKeyConfigSection(
+     initialAppendV1: Boolean? = null,
+     onSaved: () -> Unit,
+ ) {
+-    val scope = rememberCoroutineScope()
+-    var showApiKeyPlaintext by remember { mutableStateOf(false) }
+     var appendV1Suffix by remember {
+         mutableStateOf(initialAppendV1 ?: (providerType != ProviderType.gemini))
+     }
+     // OpenAI API Format: false = Chat Completions, true = Responses API
+     var useResponsesAPI by remember { mutableStateOf(false) }
++    // [FORK-MOD ua-at-create] Custom User-Agent, entered HERE at creation time.
++    //
++    // Upstream only exposes this on ProviderDetailScreen, i.e. AFTER the
++    // provider exists: you add the provider, the very first model refresh fires
++    // with the default UA, the gateway rejects it, and only then — on reopening
++    // the provider — does a "Custom User-Agent" field you never saw appear
++    // under the API base. For a gateway that ONLY accepts an official client UA
++    // that ordering is backwards; the value has to be in place before the first
++    // request, not after it fails.
++    //
++    // Same gate as upstream's detail screen: OpenAI-/Anthropic-compat protocols
++    // (the relay case). Blank → null → default UA, so behaviour for everyone who
++    // doesn't touch it is byte-identical to upstream.
++    var customUserAgent by remember { mutableStateOf("") }
++    val showUserAgentField = providerType == ProviderType.openAI ||
++        providerType == ProviderType.anthropic
++    // [FORK-MOD no-auto-fetch] Needed to record the manual-models policy on save.
++    val addContext = LocalContext.current
+ 
+     // ── Credential ──────────────────────────────────────────────────────
+     val keyPlaceholder = when (providerType) {
+@@ -525,20 +541,16 @@ private fun ColumnScope.ApiKeyConfigSection(
+     ) {
+         SettingsCardBlock {
+             RowLabel(text = stringResource(R.string.provider_list_api_key))
++            // [FORK-MOD apikey-plaintext] Shown in full, wrapping, no eye
++            // toggle — same rationale as ProviderDetailScreen's block: this is
++            // a value the user just pasted and needs to verify, and masking a
++            // single-line field made it an unreadable horizontal scroll.
+             SectionTextField(
+                 value = apiKey,
+                 onValueChange = onApiKeyChange,
+                 placeholder = keyPlaceholder,
+-                singleLine = true,
+-                visualTransformation = if (showApiKeyPlaintext) VisualTransformation.None else PasswordVisualTransformation(),
+-                trailingIcon = {
+-                    IconButton(onClick = { showApiKeyPlaintext = !showApiKeyPlaintext }) {
+-                        Icon(
+-                            if (showApiKeyPlaintext) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+-                            contentDescription = if (showApiKeyPlaintext) "Hide" else "Show",
+-                        )
+-                    }
+-                },
++                singleLine = false,
++                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+             )
+         }
+     }
+@@ -588,9 +600,31 @@ private fun ColumnScope.ApiKeyConfigSection(
+                     title = stringResource(R.string.add_provider_auto_append_v1_quoted),
+                     checked = appendV1Suffix,
+                     onCheckedChange = { appendV1Suffix = it },
+-                    showDivider = false,
++                    showDivider = showUserAgentField,
+                 )
+             }
++            // [FORK-MOD ua-at-create] Custom User-Agent, right under the API
++            // base — the field it belongs with, available BEFORE the first
++            // request instead of only after the provider exists.
++            if (showUserAgentField) {
++                SettingsCardBlock {
++                    RowLabel(text = stringResource(R.string.provider_detail_custom_user_agent))
++                    SectionTextField(
++                        value = customUserAgent,
++                        onValueChange = { customUserAgent = it },
++                        placeholder = stringResource(R.string.provider_detail_custom_user_agent_placeholder),
++                        singleLine = true,
++                    )
++                }
++            }
++        }
++        if (showUserAgentField) {
++            Text(
++                text = stringResource(R.string.fork_add_provider_ua_footer),
++                style = MaterialTheme.typography.bodySmall,
++                color = MaterialTheme.colorScheme.onSurfaceVariant,
++                modifier = Modifier.padding(start = 32.dp, end = 32.dp, top = 8.dp),
++            )
+         }
+     }
+ 
+@@ -635,6 +669,10 @@ private fun ColumnScope.ApiKeyConfigSection(
+                 appendV1Suffix = appendV1Suffix,
+                 // Only OpenAI-family providers expose the Responses API toggle.
+                 useResponsesAPI = providerType == ProviderType.openAI && useResponsesAPI,
++                // [FORK-MOD ua-at-create] Persist the UA the user entered above,
++                // so it is in effect for the FIRST request this instance makes.
++                // Blank → null → default UA (upstream's semantics).
++                customUserAgent = customUserAgent.trim().ifEmpty { null },
+             )
+             providerRepository.addInstance(instance)
+             // [T-empty-key-compat-endpoints] Never persist an empty string as
+@@ -642,8 +680,19 @@ private fun ColumnScope.ApiKeyConfigSection(
+             if (apiKey.isNotBlank()) {
+                 providerRepository.saveApiKey(instance.id, apiKey.trim())
+             }
+-            // Auto-refresh models in background (fetches from API or falls back to models.dev)
+-            scope.launch { providerRepository.refreshModels(instance) }
++            // [FORK-MOD no-auto-fetch] Upstream fired refreshModels() here,
++            // which is the "一键加载全部模型" behaviour this fork removes: it
++            // populates the instance with the endpoint's ENTIRE catalog before
++            // the user has seen it. Models are now pulled deliberately from the
++            // 模型 tab's 获取模型 sheet, where they get to choose.
++            //
++            // Marking the instance manual also suppresses the DAILY background
++            // refresh, which would otherwise re-inject the full catalog roughly
++            // 24 hours later (see ForkModelPolicy for the full reasoning).
++            com.openminis.app.ui.settings.mods.ForkModelPolicy.markManual(
++                addContext,
++                instance.id,
++            )
+             onSaved()
+         },
+         modifier = Modifier
+@@ -919,7 +968,21 @@ private fun ColumnScope.OAuthConfigSection(
+                 providerRepository.addInstance(instance)
+                 // Store the manual token as API key — ProviderFactory uses loadApiKey() for all credential types
+                 providerRepository.saveApiKey(instance.id, manualToken.trim())
+-                scope.launch { providerRepository.refreshModels(instance) }
++                // [FORK-MOD no-auto-fetch] This is the RELAY path (custom base +
++                // static bearer, e.g. a third-party coding plan), i.e. exactly
++                // where a gateway may front hundreds of models. Same treatment
++                // as the API-key path: no automatic full-catalog load, and the
++                // instance is flagged manual so the daily refresh can't inject
++                // one later. Use 获取模型 in the 模型 tab to pick.
++                //
++                // The pure OAuth sign-in path above keeps upstream's refresh: it
++                // resolves to one vendor's own short catalog (Codex ~7 models,
++                // Claude ~10), so there is nothing to protect the user from and
++                // seeing the list immediately is the better default.
++                com.openminis.app.ui.settings.mods.ForkModelPolicy.markManual(
++                    context,
++                    instance.id,
++                )
+                 onSaved()
+             },
+             modifier = Modifier

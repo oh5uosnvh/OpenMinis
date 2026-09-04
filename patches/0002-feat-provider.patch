@@ -1,0 +1,364 @@
+From e7745c8332d4f8ec9e4b1a52498e98792f1a621e Mon Sep 17 00:00:00 2001
+From: oh5uosnvh <oh5uosnvh@users.noreply.github.com>
+Date: Fri, 4 Sep 2026 10:27:31 +0800
+Subject: [PATCH 2/4] =?UTF-8?q?feat(provider):=20=E6=9C=8D=E5=8A=A1?=
+ =?UTF-8?q?=E5=95=86=E9=A1=B5=E5=BA=95=E9=83=A8=E5=9B=BA=E5=AE=9A=E3=80=8C?=
+ =?UTF-8?q?=E9=85=8D=E7=BD=AE=20/=20=E6=A8=A1=E5=9E=8B=E3=80=8D=E5=8F=8C?=
+ =?UTF-8?q?=E6=A0=87=E7=AD=BE?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+仿 kelive：服务商详情页底部常驻两个标签，配置与模型分开。
+
+做成常驻底栏而不是顶部分段控件，是因为这一页很长（名称、凭据、端点、API
+格式、Azure、图像端点、状态、语音、思考规则），顶部控件会在用户滚下去之后
+正好滑出视野 —— 而那正是想切换的时刻。
+
+上游侧只加了一个挂钩：SettingsScaffold 末尾多一个带默认值的 bottomBar 参数。
+所有既有调用点（含未来上游新增的）行为不变。
+
+配置标签直接渲染上游的 ProviderDetailScreen，不复制、不重写：那是 1200 行、
+上游几乎每个版本都会改的文件。宿主模式下上游对任何区块的改动都自动生效；
+复制一份则意味着永久手工合并。
+
+模型标签的系统返回键先回到配置标签，再退出服务商 —— 两个标签在用户认知里是
+同一个页面。
+---
+ .../app/ui/settings/SettingsComponents.kt     |   9 +
+ .../mods/ProviderDetailTabbedScreen.kt        |  93 ++++++++
+ .../ui/settings/mods/ProviderDetailTabs.kt    | 198 ++++++++++++++++++
+ 3 files changed, 300 insertions(+)
+ create mode 100644 src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabbedScreen.kt
+ create mode 100644 src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabs.kt
+
+diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/SettingsComponents.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/SettingsComponents.kt
+index 8dba149..6443fc7 100644
+--- a/src/android/app/src/main/java/com/openminis/app/ui/settings/SettingsComponents.kt
++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/SettingsComponents.kt
+@@ -83,6 +83,13 @@ fun SettingsScaffold(
+     centerTitle: Boolean = false,
+     floatingActionButton: @Composable (() -> Unit)? = null,
+     scrollable: Boolean = true,
++    // [FORK-HOOK bottom-tabs] Optional persistent bottom bar. Added as a
++    // defaulted parameter so every existing caller compiles unchanged; the
++    // fork's provider screen uses it to host the fixed 配置 / 模型 tab pair
++    // (ui/settings/mods/ProviderDetailTabbedScreen.kt). Keeping it here rather
++    // than nesting a second Scaffold inside the screen avoids double-counting
++    // the navigation-bar inset.
++    bottomBar: @Composable (() -> Unit)? = null,
+     content: @Composable ColumnScope.() -> Unit,
+ ) {
+     Scaffold(
+@@ -122,6 +129,8 @@ fun SettingsScaffold(
+             }
+         },
+         floatingActionButton = { floatingActionButton?.invoke() },
++        // [FORK-HOOK bottom-tabs] see the parameter's comment.
++        bottomBar = { bottomBar?.invoke() },
+         containerColor = MaterialTheme.colorScheme.background,
+     ) { padding ->
+         // T183: imePadding() shrinks the scroll container by the IME's
+diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabbedScreen.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabbedScreen.kt
+new file mode 100644
+index 0000000..e6abbed
+--- /dev/null
++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabbedScreen.kt
+@@ -0,0 +1,93 @@
++package com.openminis.app.ui.settings.mods
++
++import androidx.activity.compose.BackHandler
++import androidx.compose.material3.ExperimentalMaterial3Api
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.collectAsState
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.saveable.rememberSaveable
++import androidx.compose.runtime.setValue
++import com.openminis.app.data.repository.ProviderRepository
++import com.openminis.app.ui.settings.ProviderDetailScreen
++import com.openminis.app.ui.settings.SettingsScaffold
++
++/**
++ * [FORK] Host for the provider screen's two fixed bottom tabs.
++ *
++ * Replaces `ProviderDetailScreen` as the destination of the `provider/{id}`
++ * route (one line in AppNavigation.kt — the entire upstream seam).
++ *
++ * Structure:
++ *
++ *   配置 tab → the upstream [ProviderDetailScreen] verbatim, with
++ *              `showModelsSection = false` so its model list is suppressed,
++ *              plus the bottom bar. Every other section (label, credential,
++ *              endpoint, API format, Azure, image endpoint, status, voice,
++ *              thinking rules) keeps upstream's behaviour, including future
++ *              additions — we do not re-implement that page, we host it.
++ *   模型 tab → [ProviderModelsTabContent], the fork's kelive-style list.
++ *
++ * Why reuse rather than fork the config page: it is 1200 lines that upstream
++ * edits nearly every release. Hosting it means an upstream change to any
++ * section lands for free; forking it would mean merging those changes by hand
++ * forever. See docs/FORK.md §3.
++ */
++@OptIn(ExperimentalMaterial3Api::class)
++@Composable
++fun ProviderDetailTabbedScreen(
++    instanceId: String,
++    providerRepository: ProviderRepository,
++    onBack: () -> Unit,
++    onModelEntryClick: (String) -> Unit = {},
++    onAddCustomModel: () -> Unit = {},
++    onVoiceServiceClick: (String) -> Unit = {},
++) {
++    // rememberSaveable so a rotation (or process-death restore) keeps the user
++    // on the tab they were reading.
++    var tab by rememberSaveable { mutableStateOf(ProviderDetailTab.CONFIG) }
++
++    // On the 模型 tab, system back returns to 配置 first rather than leaving the
++    // provider entirely — matches how the two tabs read as one screen.
++    BackHandler(enabled = tab == ProviderDetailTab.MODELS) {
++        tab = ProviderDetailTab.CONFIG
++    }
++
++    val bottomBar: @Composable () -> Unit = {
++        ProviderDetailBottomTabs(selected = tab, onSelect = { tab = it })
++    }
++
++    when (tab) {
++        ProviderDetailTab.CONFIG -> ProviderDetailScreen(
++            instanceId = instanceId,
++            providerRepository = providerRepository,
++            onBack = onBack,
++            onModelEntryClick = onModelEntryClick,
++            onAddCustomModel = onAddCustomModel,
++            onVoiceServiceClick = onVoiceServiceClick,
++            showModelsSection = false,
++            bottomBar = bottomBar,
++        )
++
++        ProviderDetailTab.MODELS -> {
++            val config by providerRepository.config.collectAsState()
++            val instance = config.instances.find { it.id == instanceId }
++            if (instance == null) {
++                onBack()
++            } else {
++                SettingsScaffold(
++                    title = instance.label,
++                    onBack = onBack,
++                    bottomBar = bottomBar,
++                ) {
++                    ProviderModelsTabContent(
++                        instanceId = instanceId,
++                        providerRepository = providerRepository,
++                        onModelEntryClick = onModelEntryClick,
++                        onAddCustomModel = onAddCustomModel,
++                    )
++                }
++            }
++        }
++    }
++}
+diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabs.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabs.kt
+new file mode 100644
+index 0000000..af2f886
+--- /dev/null
++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabs.kt
+@@ -0,0 +1,198 @@
++package com.openminis.app.ui.settings.mods
++
++import androidx.compose.foundation.background
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.ExperimentalLayoutApi
++import androidx.compose.foundation.layout.FlowRow
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.navigationBarsPadding
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.shape.CircleShape
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.filled.Settings
++import androidx.compose.material.icons.filled.Layers
++import androidx.compose.material3.Icon
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Surface
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.draw.clip
++import androidx.compose.ui.graphics.vector.ImageVector
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.unit.dp
++import com.openminis.app.R
++import com.openminis.app.data.model.normalizeModalities
++
++/**
++ * [FORK] The two fixed tabs at the bottom of the provider screen: 配置 / 模型.
++ *
++ * Modelled on kelive's provider page. The point of it being a PERSISTENT bar
++ * rather than a segmented control at the top: on a page this long (label,
++ * credential, endpoint, API format, Azure, image endpoint, status, voice,
++ * thinking rules) the switcher has to stay reachable after the user has
++ * scrolled — a top-anchored control scrolls away exactly when it is wanted.
++ *
++ * Lives in the fork's own file so upstream never touches it. The only upstream
++ * seam it needs is `SettingsScaffold(bottomBar = …)`, one defaulted parameter.
++ */
++enum class ProviderDetailTab {
++    CONFIG,
++    MODELS,
++}
++
++@Composable
++fun ProviderDetailBottomTabs(
++    selected: ProviderDetailTab,
++    onSelect: (ProviderDetailTab) -> Unit,
++) {
++    Surface(
++        color = MaterialTheme.colorScheme.surfaceContainerLow,
++        // Hairline above the bar so it reads as chrome separated from the
++        // scrolling content, not as another card in the list.
++        tonalElevation = 3.dp,
++    ) {
++        Column {
++            Box(
++                modifier = Modifier
++                    .fillMaxWidth()
++                    .height(0.5.dp)
++                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
++            )
++            Row(
++                modifier = Modifier
++                    .fillMaxWidth()
++                    .navigationBarsPadding()
++                    .padding(vertical = 6.dp),
++                verticalAlignment = Alignment.CenterVertically,
++            ) {
++                TabItem(
++                    modifier = Modifier.weight(1f),
++                    icon = Icons.Filled.Settings,
++                    label = stringResource(R.string.fork_tab_config),
++                    selected = selected == ProviderDetailTab.CONFIG,
++                    onClick = { onSelect(ProviderDetailTab.CONFIG) },
++                )
++                TabItem(
++                    modifier = Modifier.weight(1f),
++                    icon = Icons.Filled.Layers,
++                    label = stringResource(R.string.fork_tab_models),
++                    selected = selected == ProviderDetailTab.MODELS,
++                    onClick = { onSelect(ProviderDetailTab.MODELS) },
++                )
++            }
++        }
++    }
++}
++
++@Composable
++private fun TabItem(
++    icon: ImageVector,
++    label: String,
++    selected: Boolean,
++    onClick: () -> Unit,
++    modifier: Modifier = Modifier,
++) {
++    val tint = if (selected) {
++        MaterialTheme.colorScheme.primary
++    } else {
++        MaterialTheme.colorScheme.onSurfaceVariant
++    }
++    Column(
++        modifier = modifier
++            .clip(RoundedCornerShape(12.dp))
++            .clickable(onClick = onClick)
++            .padding(vertical = 6.dp),
++        horizontalAlignment = Alignment.CenterHorizontally,
++        verticalArrangement = Arrangement.spacedBy(2.dp),
++    ) {
++        Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(22.dp))
++        Text(
++            label,
++            style = MaterialTheme.typography.labelMedium,
++            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
++            color = tint,
++        )
++    }
++}
++
++/**
++ * [FORK] Small pill used on model rows for capability tags (chat / think /
++ * img / audio …). Same visual recipe as upstream's `ModalityBadge` so the two
++ * lists don't read as different apps, but declared here to keep the fork's
++ * files self-contained.
++ */
++@Composable
++fun ForkCapabilityChip(text: String, emphasized: Boolean = false) {
++    Text(
++        text,
++        style = MaterialTheme.typography.labelSmall,
++        maxLines = 1,
++        softWrap = false,
++        color = if (emphasized) {
++            MaterialTheme.colorScheme.primary
++        } else {
++            MaterialTheme.colorScheme.onSurfaceVariant
++        },
++        modifier = Modifier
++            .background(
++                if (emphasized) {
++                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
++                } else {
++                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
++                },
++                RoundedCornerShape(4.dp),
++            )
++            .padding(horizontal = 5.dp, vertical = 1.dp),
++    )
++}
++
++/**
++ * [FORK] Capability tags for one model, in a stable order.
++ * `chat` is unconditional — every entry in this list is a chat-capable model —
++ * followed by reasoning, then the non-text modalities.
++ */
++@OptIn(ExperimentalLayoutApi::class)
++@Composable
++fun ForkModelCapabilityRow(model: com.openminis.app.data.model.LLMModel) {
++    val chat = stringResource(R.string.fork_chip_chat)
++    val think = stringResource(R.string.fork_chip_reasoning)
++    val ins = model.inputModalities.normalizeModalities().orEmpty()
++    val outs = model.outputModalities.normalizeModalities().orEmpty()
++    FlowRow(
++        horizontalArrangement = Arrangement.spacedBy(4.dp),
++        verticalArrangement = Arrangement.spacedBy(4.dp),
++    ) {
++        ForkCapabilityChip(chat)
++        if (model.supportsReasoning == true) ForkCapabilityChip(think, emphasized = true)
++        if ("image" in ins) ForkCapabilityChip("img")
++        if ("pdf" in ins) ForkCapabilityChip("pdf")
++        if ("audio" in ins) ForkCapabilityChip("audio")
++        if ("video" in ins) ForkCapabilityChip("video")
++        if ("image" in outs) ForkCapabilityChip("img-out", emphasized = true)
++        if ("audio" in outs) ForkCapabilityChip("audio-out", emphasized = true)
++        if ("video" in outs) ForkCapabilityChip("video-out", emphasized = true)
++    }
++}
++
++/** Provider accent dot, matching upstream's palette. */
++@Composable
++fun ForkProviderDot(providerType: com.openminis.app.data.model.ProviderType?) {
++    Box(
++        modifier = Modifier
++            .size(8.dp)
++            .background(
++                com.openminis.app.ui.components.providerDotColor(providerType),
++                CircleShape,
++            ),
++    )
++}

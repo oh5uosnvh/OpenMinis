@@ -1,0 +1,1473 @@
+From 6a0483a02168bf453c7bc483e3d36ef26ae35c3d Mon Sep 17 00:00:00 2001
+From: oh5uosnvh <oh5uosnvh@users.noreply.github.com>
+Date: Fri, 4 Sep 2026 10:28:07 +0800
+Subject: [PATCH 3/4] =?UTF-8?q?feat(models):=20=E6=A8=A1=E5=9E=8B=E6=94=B9?=
+ =?UTF-8?q?=E4=B8=BA=E6=89=8B=E5=8A=A8=E3=80=8C=E8=8E=B7=E5=8F=96=E6=A8=A1?=
+ =?UTF-8?q?=E5=9E=8B=E3=80=8D+=20=E5=8B=BE=E9=80=89=E6=B7=BB=E5=8A=A0?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+替掉上游的一键加载全部模型。
+
+上游的刷新是 fetch-and-replace：refreshModels → replaceEntries 把该服务商的
+整个模型列表换成端点返回的全部内容。指向一个中转了 400 个模型的网关，选择器
+就没法用了，而且用户全程没有选择权。
+
+改成 fetch 与写入分离：
+  1. ProviderCatalogFetcher.fetchCatalog —— 纯读。走的是 refreshModels 用的
+     同一批 ModelsApi 对象（同样的鉴权、base URL、UA 处理，所以在那边能用的
+     中转在这边一样能用），返回列表，不写任何东西。
+  2. 用户在面板里勾选。已存在的模型显示「已添加」且不可选 —— 默认帮他勾上会
+     让确认按钮上的数字变成谎话。
+  3. addSelected 只写勾中的，走 addEntry（增量、按 baseModel.id 去重）。既有
+     条目的覆盖设置、隐藏标记、分组归属一概不动。
+
+两个把「用户的挑选结果」守住的点，都用上游已有的机制，不新造状态：
+
+  * addSelected 写入时标记 isCustom = true。看着别扭（这些不是手打的模型），
+    但 autoRefreshModels 会跳过任何拥有自定义条目的实例（上游原话 "so we
+    never overwrite hand-edited entries"），replaceEntries 也会显式保留它们
+    （remainingCustom）。代价是 models.dev 元数据冻结在抓取时刻 —— 可接受，
+    fetchCatalog 本身已经跑过 models.dev 增强，随时可以重新获取。丢失挑选
+    结果是真 bug，上下文窗口元数据略旧不是。
+
+  * ForkModelPolicy：一个独立 SharedPreferences 标记，表示「此实例的模型由
+    用户手动管理」。补的是另一个洞 —— refreshAllModelsIfNeeded 每个日历日从
+    MinisApp.onCreate 跑一次。没有这个标记，用户今天挑了 6 个模型，明天开
+    App 发现 400 个全回来了，表现为「App 自己乱加模型」：几小时后才发作、
+    毫无可见诱因，是最难查的那类。
+    用 prefs 而不是给 ProviderInstance 加字段：后者要串 ProviderConfig、Room
+    entity、ProviderConfigMapping、schema 版本号和一次迁移 —— 为一个布尔值在
+    上游改得最勤的几个文件里留永久冲突。prefs 对上游不可见、不需要迁移，且
+    降级正确：没有记录的实例（备份恢复、iOS 导入、旧版本创建）行为与上游一致。
+
+模型标签页（ProviderModelsTab）：获取模型 / 手动添加双按钮、列表超过 6 个才
+出搜索框（3 个模型还挂搜索框只是噪音）、长按隐藏/删除。删除依旧只对自定义
+条目开放 —— 内置条目会在下次刷新时被 ProviderType.builtInModels 重建，删了
+等于自我撤销，隐藏才是正解。
+
+添加服务商时不再自动拉取。纯 OAuth 登录路径保留上游的刷新：它解析到的是单一
+厂商的短目录（Codex 约 7 个、Claude 约 10 个），没什么需要保护用户的，立刻
+看到列表是更好的默认。带自定义 base + 静态 bearer 的中转路径与 API key 路径
+同等对待 —— 那正是可能中转几百个模型的地方。
+
+文案放在 res/values*/strings_fork.xml 而不是上游的 strings.xml：Android 构建
+时会合并 values/*.xml，所以 fork 的文案可以完全不碰上游每个版本都在改的那个
+文件，冲突面为零。
+---
+ .../app/data/repository/ProviderRepository.kt |  13 +
+ .../app/ui/navigation/AppNavigation.kt        |   6 +-
+ .../app/ui/settings/ProviderDetailScreen.kt   | 142 +++++--
+ .../app/ui/settings/mods/ForkModelPolicy.kt   |  60 +++
+ .../settings/mods/ProviderCatalogFetcher.kt   | 220 +++++++++++
+ .../settings/mods/ProviderModelsFetchSheet.kt | 374 ++++++++++++++++++
+ .../app/ui/settings/mods/ProviderModelsTab.kt | 332 ++++++++++++++++
+ .../src/main/res/values-zh/strings_fork.xml   |  46 +++
+ .../app/src/main/res/values/strings_fork.xml  |  53 +++
+ 9 files changed, 1205 insertions(+), 41 deletions(-)
+ create mode 100644 src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ForkModelPolicy.kt
+ create mode 100644 src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderCatalogFetcher.kt
+ create mode 100644 src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsFetchSheet.kt
+ create mode 100644 src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsTab.kt
+ create mode 100644 src/android/app/src/main/res/values-zh/strings_fork.xml
+ create mode 100644 src/android/app/src/main/res/values/strings_fork.xml
+
+diff --git a/src/android/app/src/main/java/com/openminis/app/data/repository/ProviderRepository.kt b/src/android/app/src/main/java/com/openminis/app/data/repository/ProviderRepository.kt
+index 6b45729..aeed545 100644
+--- a/src/android/app/src/main/java/com/openminis/app/data/repository/ProviderRepository.kt
++++ b/src/android/app/src/main/java/com/openminis/app/data/repository/ProviderRepository.kt
+@@ -2311,6 +2311,19 @@ class ProviderRepository(private val context: Context) {
+      * so we never overwrite hand-edited entries. Mirrors iOS `autoRefreshModels(for:)`.
+      */
+     private suspend fun autoRefreshModels(instance: ProviderInstance) {
++        // [FORK-HOOK manual-models] Instances created by the fork manage their
++        // model list by hand (获取模型 + 勾选). A background refresh here would
++        // call replaceEntries and swap the user's picks for the endpoint's whole
++        // catalog — silently, a day after they curated it. Same intent as the
++        // hasCustom skip immediately below, extended to instances that are
++        // user-curated but not yet populated. See ForkModelPolicy.
++        if (com.openminis.app.ui.settings.mods.ForkModelPolicy.isManual(context, instance.id)) {
++            android.util.Log.i(
++                "ProviderRepo",
++                "[ModelList] autoRefresh SKIP ${instance.label} — fork manual model policy",
++            )
++            return
++        }
+         val hasCustom = _config.value.modelEntries.any {
+             it.providerInstanceId == instance.id && it.isCustom
+         }
+diff --git a/src/android/app/src/main/java/com/openminis/app/ui/navigation/AppNavigation.kt b/src/android/app/src/main/java/com/openminis/app/ui/navigation/AppNavigation.kt
+index 2ef8646..8aa280e 100644
+--- a/src/android/app/src/main/java/com/openminis/app/ui/navigation/AppNavigation.kt
++++ b/src/android/app/src/main/java/com/openminis/app/ui/navigation/AppNavigation.kt
+@@ -875,7 +875,11 @@ fun AppNavigation(
+             arguments = listOf(navArgument("instanceId") { type = NavType.StringType }),
+         ) { backStackEntry ->
+             val instanceId = backStackEntry.arguments?.getString("instanceId") ?: return@composable
+-            ProviderDetailScreen(
++            // [FORK-HOOK provider-tabs] Route points at the fork's tabbed host
++            // instead of ProviderDetailScreen directly. The host renders the
++            // upstream screen for the 配置 tab, so this is the ONLY line the
++            // fork changes in this file. See docs/FORK.md §3.
++            com.openminis.app.ui.settings.mods.ProviderDetailTabbedScreen(
+                 instanceId = instanceId,
+                 providerRepository = providerRepository,
+                 onBack = { navController.safePopBackStack() },
+diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/ProviderDetailScreen.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/ProviderDetailScreen.kt
+index 0f31663..b147648 100644
+--- a/src/android/app/src/main/java/com/openminis/app/ui/settings/ProviderDetailScreen.kt
++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/ProviderDetailScreen.kt
+@@ -88,6 +88,22 @@ fun ProviderDetailScreen(
+     onModelEntryClick: (String) -> Unit = {},
+     onAddCustomModel: () -> Unit = {},
+     onVoiceServiceClick: (String) -> Unit = {},
++    // ── [FORK-HOOK provider-tabs] ────────────────────────────────────────
++    // The fork splits this screen into two fixed bottom tabs (配置 / 模型,
++    // kelive-style), so the model list must be renderable from the OTHER tab
++    // instead of being welded to the bottom of the config page. Both knobs are
++    // defaulted to the upstream behaviour, so upstream callers — and any new
++    // call site an upstream update adds — compile and behave unchanged.
++    //
++    // Deliberately parameters rather than a rewrite: adding a defaulted
++    // parameter at the END of the list is the one edit shape git三方合并
++    // basically never conflicts on. See docs/FORK.md §3 规则 2.
++    showModelsSection: Boolean = true,
++    /** Extra content appended after the credential/endpoint sections. */
++    bottomBar: @Composable (() -> Unit)? = null,
++    /** Back arrow suppression — the tab host owns navigation when non-null. */
++    showBackArrow: Boolean = true,
++    title: String? = null,
+ ) {
+     val config by providerRepository.config.collectAsState()
+     val instance = config.instances.find { it.id == instanceId }
+@@ -122,7 +138,8 @@ fun ProviderDetailScreen(
+     var storedKey by remember(instanceId) { mutableStateOf(providerRepository.loadApiKey(instanceId) ?: "") }
+     var isEditingKey by remember { mutableStateOf(false) }
+     var editKeyValue by remember { mutableStateOf("") }
+-    var keyVisible by remember { mutableStateOf(false) }
++    // [FORK-MOD apikey-plaintext] No `keyVisible` state: the key is always
++    // shown in full (see ApiKeyCredentialBlock for the reasoning).
+ 
+     var isEnabled by remember { mutableStateOf(instance.isEnabled) }
+     var customBaseURL by remember { mutableStateOf(instance.customBaseURL ?: "") }
+@@ -137,8 +154,11 @@ fun ProviderDetailScreen(
+     val exportContext = androidx.compose.ui.platform.LocalContext.current
+ 
+     SettingsScaffold(
+-        title = instance.label,
+-        onBack = onBack,
++        // [FORK-HOOK provider-tabs] title/back are overridable so the tab host
++        // can own the top bar; defaults reproduce upstream exactly.
++        title = title ?: instance.label,
++        onBack = if (showBackArrow) onBack else null,
++        bottomBar = bottomBar,
+         actions = {
+             IconButton(onClick = {
+                 AppLogger.info(TAG, "Export instance ${instance.id} (${instance.label})")
+@@ -193,8 +213,6 @@ fun ProviderDetailScreen(
+                 } else {
+                     ApiKeyCredentialBlock(
+                         storedKey = storedKey,
+-                        keyVisible = keyVisible,
+-                        onToggleVisibility = { keyVisible = !keyVisible },
+                         isEditing = isEditingKey,
+                         editValue = editKeyValue,
+                         onEditValueChange = { editKeyValue = it },
+@@ -205,7 +223,6 @@ fun ProviderDetailScreen(
+                         onCancelEdit = {
+                             isEditingKey = false
+                             editKeyValue = ""
+-                            keyVisible = false
+                         },
+                         onSave = {
+                             providerRepository.saveApiKey(instanceId, editKeyValue)
+@@ -216,7 +233,6 @@ fun ProviderDetailScreen(
+                             AppLogger.info(TAG, "Saved API key for ${instance.id}")
+                             isEditingKey = false
+                             editKeyValue = ""
+-                            keyVisible = false
+                         },
+                     )
+                 }
+@@ -525,6 +541,10 @@ fun ProviderDetailScreen(
+         ThinkingRulesSection(instance = instance, providerRepository = providerRepository)
+ 
+         // ─── Models ─────────────────────────────────────────────────
++        // [FORK-HOOK provider-tabs] Gated: in the fork the model list lives in
++        // the "模型" tab (ProviderModelsScreen), not appended to the config
++        // page. Default true = upstream layout.
++        if (showModelsSection) {
+         SettingsSection(
+             header = stringResource(R.string.provider_detail_models_count_header, entries.size),
+         ) {
+@@ -718,6 +738,7 @@ fun ProviderDetailScreen(
+         ) {
+             Text(stringResource(R.string.provider_detail_add_custom_model))
+         }
++        } // [FORK-HOOK provider-tabs] end if (showModelsSection)
+ 
+         // [T-android-delete-provider-button-height] The "Delete provider" button
+         // uses the same default 48dp MinisButtonHeight as "Add custom model"
+@@ -924,8 +945,6 @@ private fun OAuthCredentialBlock(
+ @Composable
+ private fun ApiKeyCredentialBlock(
+     storedKey: String,
+-    keyVisible: Boolean,
+-    onToggleVisibility: () -> Unit,
+     isEditing: Boolean,
+     editValue: String,
+     onEditValueChange: (String) -> Unit,
+@@ -933,31 +952,48 @@ private fun ApiKeyCredentialBlock(
+     onCancelEdit: () -> Unit,
+     onSave: () -> Unit,
+ ) {
++    // [FORK-MOD apikey-plaintext] The key is shown IN FULL, wrapped over as
++    // many lines as it needs, in both the display and the edit state.
++    //
++    // Upstream masked it (maskedKey → "sk-abc...7f9d") behind an eye toggle. On
++    // a phone that is a net loss: the value being hidden is one the user just
++    // pasted from a provider console and routinely has to eyeball against it
++    // ("did the paste truncate?", "is this the relay key or the official
++    // one?"), and PasswordVisualTransformation on a single-line field made even
++    // the unmasked state a horizontally-scrolling one-liner nobody can read.
++    // The threat model does not justify it either — this is a per-app settings
++    // page behind the device lock, not a shared screen.
++    //
++    // singleLine = false + no VisualTransformation is what makes it wrap; the
++    // monospace style keeps character boundaries legible for comparison.
++    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
++    val context = androidx.compose.ui.platform.LocalContext.current
++    val copiedToast = stringResource(R.string.provider_detail_key_copied)
++
++    fun copyToClipboard(value: String) {
++        if (value.isEmpty()) return
++        clipboard.setText(androidx.compose.ui.text.AnnotatedString(value))
++        android.widget.Toast.makeText(context, copiedToast, android.widget.Toast.LENGTH_SHORT).show()
++    }
++
+     if (isEditing) {
+         SectionTextField(
+             value = editValue,
+             onValueChange = onEditValueChange,
+-            singleLine = true,
+-            visualTransformation = if (keyVisible) {
+-                VisualTransformation.None
+-            } else {
+-                PasswordVisualTransformation()
+-            },
+-            trailingIcon = {
+-                IconButton(onClick = onToggleVisibility) {
+-                    Icon(
+-                        if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+-                        contentDescription = if (keyVisible) "Hide" else "Show",
+-                    )
+-                }
+-            },
++            singleLine = false,
++            textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+             fieldModifier = Modifier.bringIntoViewOnFocus(),
+         )
+-        Row(modifier = Modifier.padding(top = 8.dp)) {
+-            // [T-android-settings-ui-md3] #4 + #12 Cancel is the SECONDARY action:
+-            // a neutral outlined pill (onSurfaceVariant content/border), forming
+-            // the standard MD3 outlined-vs-filled pair with the filled Save below.
+-            // Previously a primary-teal text button — indistinguishable from Save.
++        // [FORK-MOD apikey-plaintext] Button order is fixed: 取消 · 复制 · 保存.
++        // Copy sits in the MIDDLE, and copies what is currently in the field
++        // (not the stored value) — while editing, the draft is what the user
++        // cares about, and copying the pre-edit value would be a silent
++        // mismatch. Cancel keeps upstream's neutral-outlined treatment, Copy is
++        // outlined too so the filled Save stays the single primary action.
++        Row(
++            modifier = Modifier.padding(top = 8.dp),
++            verticalAlignment = Alignment.CenterVertically,
++        ) {
+             MinisSmallOutlinedButton(
+                 onClick = onCancelEdit,
+                 colors = ButtonDefaults.outlinedButtonColors(
+@@ -968,25 +1004,51 @@ private fun ApiKeyCredentialBlock(
+                 Text(stringResource(R.string.common_cancel))
+             }
+             Spacer(modifier = Modifier.width(8.dp))
++            MinisSmallOutlinedButton(
++                onClick = { copyToClipboard(editValue) },
++                enabled = editValue.isNotEmpty(),
++            ) {
++                Text(stringResource(R.string.common_copy))
++            }
++            Spacer(modifier = Modifier.width(8.dp))
+             MinisSmallButton(onClick = onSave, enabled = editValue.isNotBlank()) {
+                 Text(stringResource(R.string.provider_detail_save_key))
+             }
+         }
+     } else {
+-        Row(verticalAlignment = Alignment.CenterVertically) {
+-            Text(
+-                text = if (keyVisible) storedKey else maskedKey(storedKey),
+-                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+-                modifier = Modifier.weight(1f),
+-            )
+-            IconButton(onClick = onToggleVisibility) {
+-                Icon(
+-                    if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+-                    contentDescription = if (keyVisible) "Hide" else "Show",
++        Column {
++            // Full key, wrapped. selectable so a long-press still offers the
++            // system copy affordance in addition to the button below.
++            androidx.compose.foundation.text.selection.SelectionContainer {
++                Text(
++                    text = if (storedKey.isEmpty()) {
++                        stringResource(R.string.provider_detail_key_not_set)
++                    } else {
++                        storedKey
++                    },
++                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
++                    color = if (storedKey.isEmpty()) {
++                        MaterialTheme.colorScheme.onSurfaceVariant
++                    } else {
++                        MaterialTheme.colorScheme.onSurface
++                    },
++                    modifier = Modifier.fillMaxWidth(),
+                 )
+             }
+-            MinisSmallTextButton(onClick = onBeginEdit) {
+-                Text(stringResource(R.string.common_edit))
++            Row(
++                modifier = Modifier.padding(top = 8.dp),
++                verticalAlignment = Alignment.CenterVertically,
++            ) {
++                MinisSmallOutlinedButton(
++                    onClick = { copyToClipboard(storedKey) },
++                    enabled = storedKey.isNotEmpty(),
++                ) {
++                    Text(stringResource(R.string.common_copy))
++                }
++                Spacer(modifier = Modifier.width(8.dp))
++                MinisSmallButton(onClick = onBeginEdit) {
++                    Text(stringResource(R.string.common_edit))
++                }
+             }
+         }
+     }
+diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ForkModelPolicy.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ForkModelPolicy.kt
+new file mode 100644
+index 0000000..6d1d081
+--- /dev/null
++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ForkModelPolicy.kt
+@@ -0,0 +1,60 @@
++package com.openminis.app.ui.settings.mods
++
++import android.content.Context
++
++/**
++ * [FORK] Per-instance "the user manages this model list by hand" flag.
++ *
++ * ## The leak this plugs
++ *
++ * The fork removed the automatic full-catalog fetch when a provider is created,
++ * and added the pick-what-you-want 获取模型 sheet instead. That alone is not
++ * enough: `ProviderRepository.refreshAllModelsIfNeeded` runs once per calendar
++ * day from `MinisApp.onCreate` and calls `refreshModels` → `replaceEntries`,
++ * which REPLACES the instance's list with everything the endpoint returns.
++ *
++ * So without this flag, a user who adds a relay fronting 400 models, curates 6
++ * of them, and reopens the app the next day finds all 400 back. That reads as
++ * "the app randomly re-added everything" — the worst failure mode, because it
++ * happens hours later with no visible cause.
++ *
++ * Upstream already has a skip for exactly this class of problem
++ * (`autoRefreshModels` bails when the instance owns custom entries, "so we never
++ * overwrite hand-edited entries"). This extends the same idea to instances the
++ * fork created, including ones the user has not curated yet.
++ *
++ * ## Why SharedPreferences and not a ProviderInstance field
++ *
++ * A field would have to be threaded through `ProviderConfig`, the Room entity,
++ * `ProviderConfigMapping`, a schema version bump and a migration — a large,
++ * permanently-conflicting diff across the files upstream edits most, for one
++ * boolean. A separate prefs file is invisible to upstream, needs no migration,
++ * and degrades correctly: an instance with no entry here (restored from a
++ * backup, imported from iOS, or created by an older build) behaves exactly as
++ * upstream does.
++ */
++object ForkModelPolicy {
++
++    private const val PREFS = "fork_model_policy"
++    private const val KEY_PREFIX = "manual_"
++
++    private fun prefs(context: Context) =
++        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
++
++    /**
++     * True when this instance's model list is user-curated and must not be
++     * replaced by a background refresh.
++     */
++    fun isManual(context: Context, instanceId: String): Boolean =
++        prefs(context).getBoolean(KEY_PREFIX + instanceId, false)
++
++    /** Called when the fork creates a provider through AddProviderScreen. */
++    fun markManual(context: Context, instanceId: String) {
++        prefs(context).edit().putBoolean(KEY_PREFIX + instanceId, true).apply()
++    }
++
++    /** Opt back into upstream's automatic daily refresh for this instance. */
++    fun clearManual(context: Context, instanceId: String) {
++        prefs(context).edit().remove(KEY_PREFIX + instanceId).apply()
++    }
++}
+diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderCatalogFetcher.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderCatalogFetcher.kt
+new file mode 100644
+index 0000000..1fc7ef8
+--- /dev/null
++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderCatalogFetcher.kt
+@@ -0,0 +1,220 @@
++package com.openminis.app.ui.settings.mods
++
++import com.openminis.app.data.model.LLMModel
++import com.openminis.app.data.model.ProviderCredential
++import com.openminis.app.data.model.ProviderInstance
++import com.openminis.app.data.model.ProviderType
++import com.openminis.app.data.repository.ProviderRepository
++import com.openminis.app.logging.AppLogger
++import com.openminis.app.provider.ModelsDevApi
++import com.openminis.app.provider.anthropic.AnthropicModelsApi
++import com.openminis.app.provider.gemini.GeminiModelsApi
++import com.openminis.app.provider.openai.OpenAIModelsApi
++import com.openminis.app.provider.openrouter.OpenRouterModelsApi
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.withContext
++
++/**
++ * [FORK] Read-only catalog probe for the "获取模型" flow.
++ *
++ * ## Why this exists rather than calling ProviderRepository.refreshModels
++ *
++ * `refreshModels` is a WRITE: it fetches and then calls `replaceEntries`,
++ * which swaps the instance's whole entry list for whatever the endpoint
++ * returned. That is the upstream "一键加载全部模型" behaviour this fork is
++ * replacing — a relay that fronts 400 models leaves the picker unusable, and
++ * the user never got a say.
++ *
++ * So the fetch is split from the commit:
++ *
++ *   1. [fetchCatalog] — pure read. Hits the same per-provider ModelsApi
++ *      objects `refreshModels` uses (identical auth, base-URL and UA handling,
++ *      so a relay that works there works here), returns the list, writes
++ *      nothing.
++ *   2. The user ticks what they want in ProviderModelsFetchSheet.
++ *   3. [addSelected] — commits ONLY those, via `ProviderRepository.addEntry`,
++ *      which is additive and dedupes on `baseModel.id`. Existing entries,
++ *      their overrides, hidden flags and group memberships are untouched.
++ *
++ * The upstream refresh path is left completely intact — this is additive. If
++ * an upstream update changes how models are fetched, the only thing that can
++ * break here is a signature in [fetchCatalog]'s `when`, which fails at COMPILE
++ * time rather than silently drifting. See docs/FORK.md §3.
++ */
++object ProviderCatalogFetcher {
++
++    private const val TAG = "ForkCatalogFetcher"
++
++    sealed class FetchResult {
++        data class Success(val models: List<LLMModel>) : FetchResult()
++        data class Failure(val message: String) : FetchResult()
++    }
++
++    /**
++     * Fetch the provider's model catalog WITHOUT touching persisted state.
++     *
++     * `forceRefresh = true` and `context = null` on every call: the disk cache
++     * exists to keep app start off the network, but a user who explicitly
++     * pressed 获取模型 wants the live list — serving them a 7-day-old cache is
++     * how "my new model doesn't show up" bugs happen.
++     */
++    suspend fun fetchCatalog(
++        instance: ProviderInstance,
++        providerRepository: ProviderRepository,
++    ): FetchResult = withContext(Dispatchers.IO) {
++        // Same credential resolution as refreshModels: usableApiKey substitutes
++        // "" for the legitimately keyless case (local relay + custom base URL),
++        // and returns null when a key is genuinely required.
++        val apiKey = providerRepository.usableApiKey(instance)
++        val baseURL = instance.effectiveBaseURL
++
++        // Codex OAuth cannot call /v1/models — upstream ships a static list for
++        // exactly this path, so reuse it instead of failing.
++        if (instance.providerType == ProviderType.openAI &&
++            instance.credentialType == ProviderCredential.oauth &&
++            instance.customBaseURL.isNullOrBlank()
++        ) {
++            val models = OpenAIModelsApi.fetchModelsOAuth()
++            return@withContext if (models.isEmpty()) {
++                FetchResult.Failure("Codex OAuth catalog unavailable")
++            } else {
++                FetchResult.Success(models)
++            }
++        }
++
++        if (apiKey == null) {
++            return@withContext FetchResult.Failure(
++                "No credential for this provider. Add an API key (or sign in) first.",
++            )
++        }
++
++        val models = try {
++            when (instance.providerType) {
++                ProviderType.anthropic -> AnthropicModelsApi.fetchModels(
++                    apiKey,
++                    baseURL,
++                    isOAuth = instance.credentialType == ProviderCredential.oauth,
++                    forceRefresh = true,
++                    customUserAgent = instance.customUserAgent,
++                )
++                ProviderType.gemini -> GeminiModelsApi.fetchModels(
++                    apiKey,
++                    isOAuth = instance.credentialType == ProviderCredential.oauth,
++                    forceRefresh = true,
++                )
++                ProviderType.openAI, ProviderType.openAIResponses ->
++                    OpenAIModelsApi.fetchModels(
++                        apiKey,
++                        baseURL,
++                        forceRefresh = true,
++                        customUserAgent = instance.customUserAgent,
++                    )
++                ProviderType.openRouter -> OpenRouterModelsApi.fetchModels(
++                    apiKey,
++                    forceRefresh = true,
++                )
++                // xAI / Kimi speak the OpenAI shape. The `?:` default is
++                // load-bearing, not cosmetic: an instance added through the
++                // OAuth button carries no customBaseURL, so effectiveBaseURL is
++                // null and OpenAIModelsApi would resolve api.openai.com —
++                // sending an xAI token to OpenAI and listing GPT models under a
++                // Grok provider. Same trap upstream documents in refreshModels.
++                ProviderType.xAI -> OpenAIModelsApi.fetchModels(
++                    apiKey,
++                    baseURL ?: "https://api.x.ai/v1",
++                    forceRefresh = true,
++                    customUserAgent = instance.customUserAgent,
++                ).ifEmpty { com.openminis.app.provider.xai.XAIModelsApi.fetchModelsOAuth() }
++                ProviderType.kimiCode -> OpenAIModelsApi.fetchModels(
++                    apiKey,
++                    baseURL ?: "${com.openminis.app.auth.KimiDeviceFlow.CODING_API_BASE}/v1",
++                    forceRefresh = true,
++                    customUserAgent = instance.customUserAgent,
++                )
++                ProviderType.antigravity, ProviderType.unsupported -> emptyList()
++            }
++        } catch (e: Exception) {
++            AppLogger.warning(TAG, "fetchCatalog failed for ${instance.id}: ${e.message}")
++            return@withContext FetchResult.Failure(e.message ?: "network error")
++        }
++
++        if (models.isNotEmpty()) {
++            AppLogger.info(TAG, "fetchCatalog: ${models.size} models for ${instance.label}")
++            return@withContext FetchResult.Success(models)
++        }
++
++        // Fall back to the models.dev registry by base URL, exactly as
++        // refreshModels does — it covers many OpenAI-/Anthropic-compatible
++        // gateways by hostname and costs nothing when there's no match.
++        val fallback = ModelsDevApi.fetchModels(
++            baseURL ?: when (instance.providerType) {
++                ProviderType.anthropic -> "https://api.anthropic.com/v1"
++                ProviderType.gemini -> "https://generativelanguage.googleapis.com"
++                ProviderType.openRouter -> "https://openrouter.ai/api/v1"
++                ProviderType.xAI -> "https://api.x.ai/v1"
++                else -> "https://api.openai.com/v1"
++            },
++        )
++        if (fallback.isNotEmpty()) {
++            AppLogger.info(TAG, "fetchCatalog: models.dev fallback ${fallback.size} for ${instance.label}")
++            FetchResult.Success(fallback)
++        } else {
++            FetchResult.Failure("The endpoint returned no models.")
++        }
++    }
++
++    /**
++     * Commit the user's picks. Additive: [ProviderRepository.addEntry] skips an
++     * entry whose `baseModel.id` already exists on this instance, so re-adding
++     * is a no-op rather than a duplicate, and nothing already present is
++     * removed or reset.
++     *
++     * ## Why `isCustom = true` on models that came from the provider's catalog
++     *
++     * It looks wrong — these are not hand-typed models — but it is precisely
++     * what protects the curation the user just performed, using upstream's own
++     * mechanism rather than new state:
++     *
++     *  - `ProviderRepository.autoRefreshModels` SKIPS any instance that owns at
++     *    least one custom entry ("so we never overwrite hand-edited entries").
++     *    Without the flag, the daily `refreshAllModelsIfNeeded` sweep would call
++     *    `refreshModels` → `replaceEntries` and swap the user's 5 picked models
++     *    for the endpoint's full 400 — silently undoing the whole point of this
++     *    feature, roughly 24 hours later. That failure mode is the worst kind:
++     *    it looks like the app "randomly re-added everything".
++     *  - `replaceEntries` also carries custom entries forward explicitly
++     *    (`remainingCustom`), so even a refresh triggered from somewhere else
++     *    cannot drop them.
++     *
++     * The cost is that models.dev metadata for these entries is frozen at fetch
++     * time instead of being re-enriched daily. Acceptable: `fetchCatalog` already
++     * ran the models.dev enrichment (it goes through the same ModelsApi objects),
++     * and the user can re-fetch at any time. Losing curation is a real bug;
++     * slightly stale context-window metadata is not.
++     *
++     * Returns how many entries were actually new.
++     */
++    fun addSelected(
++        instanceId: String,
++        models: List<LLMModel>,
++        providerRepository: ProviderRepository,
++    ): Int {
++        val existing = providerRepository.entriesFor(instanceId)
++            .map { it.baseModel.id }
++            .toSet()
++        var added = 0
++        for (model in models) {
++            if (model.id in existing) continue
++            providerRepository.addEntry(
++                com.openminis.app.data.model.ModelEntry(
++                    providerInstanceId = instanceId,
++                    baseModel = model,
++                    isCustom = true,
++                ),
++            )
++            added++
++        }
++        AppLogger.info(TAG, "addSelected: $added new of ${models.size} picked for $instanceId")
++        return added
++    }
++}
+diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsFetchSheet.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsFetchSheet.kt
+new file mode 100644
+index 0000000..bcaddc9
+--- /dev/null
++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsFetchSheet.kt
+@@ -0,0 +1,374 @@
++package com.openminis.app.ui.settings.mods
++
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxHeight
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.heightIn
++import androidx.compose.foundation.layout.navigationBarsPadding
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.lazy.items
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.filled.CheckCircle
++import androidx.compose.material.icons.filled.Close
++import androidx.compose.material.icons.filled.RadioButtonUnchecked
++import androidx.compose.material.icons.filled.Search
++import androidx.compose.material3.CircularProgressIndicator
++import androidx.compose.material3.ExperimentalMaterial3Api
++import androidx.compose.material3.HorizontalDivider
++import androidx.compose.material3.Icon
++import androidx.compose.material3.IconButton
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.ModalBottomSheet
++import androidx.compose.material3.OutlinedTextField
++import androidx.compose.material3.Text
++import androidx.compose.material3.rememberModalBottomSheetState
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.rememberCoroutineScope
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.text.font.FontFamily
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.unit.dp
++import com.openminis.app.R
++import com.openminis.app.data.model.LLMModel
++import com.openminis.app.data.model.ProviderInstance
++import com.openminis.app.data.repository.ProviderRepository
++import com.openminis.app.ui.components.MinisButton
++import com.openminis.app.ui.components.MinisSmallTextButton
++import kotlinx.coroutines.launch
++
++/**
++ * [FORK] The 获取模型 sheet — fetch the provider catalog, tick what you want,
++ * confirm.
++ *
++ * The whole reason this exists: upstream's model refresh is fetch-and-replace
++ * with no选择环节. Here the fetch writes NOTHING (see
++ * [ProviderCatalogFetcher.fetchCatalog]); the only write happens when the user
++ * presses 添加, and it is additive.
++ *
++ * Models already on the instance render as "已添加" and are non-selectable — the
++ * alternative (silently pre-ticking them) would make the confirm button's count
++ * a lie about what is about to change.
++ */
++@OptIn(ExperimentalMaterial3Api::class)
++@Composable
++fun ProviderModelsFetchSheet(
++    instance: ProviderInstance,
++    providerRepository: ProviderRepository,
++    onDismiss: () -> Unit,
++) {
++    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
++    val scope = rememberCoroutineScope()
++    val context = androidx.compose.ui.platform.LocalContext.current
++
++    var isLoading by remember { mutableStateOf(true) }
++    var errorMessage by remember { mutableStateOf<String?>(null) }
++    var catalog by remember { mutableStateOf<List<LLMModel>>(emptyList()) }
++    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
++    var searchQuery by remember { mutableStateOf("") }
++    var reloadTick by remember { mutableStateOf(0) }
++
++    val existingIds = remember(instance.id, catalog) {
++        providerRepository.entriesFor(instance.id).map { it.baseModel.id }.toSet()
++    }
++
++    LaunchedEffect(instance.id, reloadTick) {
++        isLoading = true
++        errorMessage = null
++        when (val result = ProviderCatalogFetcher.fetchCatalog(instance, providerRepository)) {
++            is ProviderCatalogFetcher.FetchResult.Success -> {
++                catalog = result.models
++                errorMessage = null
++            }
++            is ProviderCatalogFetcher.FetchResult.Failure -> {
++                catalog = emptyList()
++                errorMessage = result.message
++            }
++        }
++        isLoading = false
++    }
++
++    val q = searchQuery.trim().lowercase()
++    val filtered = if (q.isEmpty()) {
++        catalog
++    } else {
++        catalog.filter {
++            it.displayName.lowercase().contains(q) || it.id.lowercase().contains(q)
++        }
++    }
++    // Only rows the user can actually act on count towards 全选.
++    val selectableIds = filtered.filter { it.id !in existingIds }.map { it.id }
++
++    ModalBottomSheet(
++        onDismissRequest = onDismiss,
++        sheetState = sheetState,
++    ) {
++        Column(
++            modifier = Modifier
++                .fillMaxWidth()
++                .fillMaxHeight(0.9f),
++        ) {
++            // ── Header ──────────────────────────────────────────────────
++            Row(
++                modifier = Modifier
++                    .fillMaxWidth()
++                    .padding(horizontal = 20.dp)
++                    .padding(bottom = 4.dp),
++                verticalAlignment = Alignment.CenterVertically,
++            ) {
++                Column(modifier = Modifier.weight(1f)) {
++                    Text(
++                        stringResource(R.string.fork_fetch_title),
++                        style = MaterialTheme.typography.titleMedium,
++                        fontWeight = FontWeight.SemiBold,
++                    )
++                    Text(
++                        if (isLoading || errorMessage != null) {
++                            stringResource(R.string.fork_fetch_subtitle)
++                        } else {
++                            stringResource(R.string.fork_fetch_found, catalog.size)
++                        },
++                        style = MaterialTheme.typography.bodySmall,
++                        color = MaterialTheme.colorScheme.onSurfaceVariant,
++                    )
++                }
++                if (selectableIds.isNotEmpty()) {
++                    MinisSmallTextButton(
++                        onClick = {
++                            selected = if (selectableIds.all { it in selected }) {
++                                selected - selectableIds.toSet()
++                            } else {
++                                selected + selectableIds
++                            }
++                        },
++                    ) {
++                        Text(
++                            if (selectableIds.all { it in selected }) {
++                                stringResource(R.string.fork_fetch_clear_selection)
++                            } else {
++                                stringResource(R.string.fork_fetch_select_all)
++                            },
++                        )
++                    }
++                }
++            }
++
++            // ── Search ──────────────────────────────────────────────────
++            if (catalog.size >= 6) {
++                OutlinedTextField(
++                    value = searchQuery,
++                    onValueChange = { searchQuery = it },
++                    placeholder = { Text(stringResource(R.string.fork_models_search_placeholder)) },
++                    singleLine = true,
++                    shape = RoundedCornerShape(50),
++                    modifier = Modifier
++                        .fillMaxWidth()
++                        .padding(horizontal = 20.dp, vertical = 8.dp),
++                    leadingIcon = {
++                        Icon(
++                            Icons.Default.Search,
++                            contentDescription = null,
++                            modifier = Modifier.size(18.dp),
++                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
++                        )
++                    },
++                    trailingIcon = {
++                        if (searchQuery.isNotEmpty()) {
++                            IconButton(onClick = { searchQuery = "" }) {
++                                Icon(
++                                    Icons.Default.Close,
++                                    contentDescription = stringResource(R.string.fork_models_clear_search),
++                                    modifier = Modifier.size(18.dp),
++                                )
++                            }
++                        }
++                    },
++                )
++            }
++
++            // ── Body ────────────────────────────────────────────────────
++            Box(modifier = Modifier.weight(1f)) {
++                when {
++                    isLoading -> Column(
++                        modifier = Modifier.fillMaxWidth().padding(32.dp),
++                        horizontalAlignment = Alignment.CenterHorizontally,
++                        verticalArrangement = Arrangement.spacedBy(12.dp),
++                    ) {
++                        CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
++                        Text(
++                            stringResource(R.string.fork_fetch_loading),
++                            style = MaterialTheme.typography.bodyMedium,
++                            color = MaterialTheme.colorScheme.onSurfaceVariant,
++                        )
++                    }
++
++                    errorMessage != null -> Column(
++                        modifier = Modifier.fillMaxWidth().padding(24.dp),
++                        horizontalAlignment = Alignment.CenterHorizontally,
++                        verticalArrangement = Arrangement.spacedBy(12.dp),
++                    ) {
++                        Text(
++                            stringResource(R.string.fork_fetch_failed, errorMessage!!),
++                            style = MaterialTheme.typography.bodyMedium,
++                            color = MaterialTheme.colorScheme.error,
++                        )
++                        MinisButton(onClick = { reloadTick++ }) {
++                            Text(stringResource(R.string.fork_fetch_retry))
++                        }
++                    }
++
++                    catalog.isEmpty() -> Text(
++                        stringResource(R.string.fork_fetch_empty),
++                        style = MaterialTheme.typography.bodyMedium,
++                        color = MaterialTheme.colorScheme.onSurfaceVariant,
++                        modifier = Modifier.padding(24.dp),
++                    )
++
++                    else -> LazyColumn(modifier = Modifier.fillMaxWidth()) {
++                        items(filtered, key = { it.id }) { model ->
++                            val alreadyAdded = model.id in existingIds
++                            val isSelected = model.id in selected
++                            Column(
++                                modifier = Modifier
++                                    .fillMaxWidth()
++                                    .then(
++                                        if (alreadyAdded) {
++                                            Modifier
++                                        } else {
++                                            Modifier.clickable {
++                                                selected = if (isSelected) {
++                                                    selected - model.id
++                                                } else {
++                                                    selected + model.id
++                                                }
++                                            }
++                                        },
++                                    )
++                                    .heightIn(min = 68.dp)
++                                    .padding(horizontal = 20.dp, vertical = 10.dp),
++                                verticalArrangement = Arrangement.spacedBy(3.dp),
++                            ) {
++                                Row(verticalAlignment = Alignment.CenterVertically) {
++                                    if (alreadyAdded) {
++                                        Icon(
++                                            Icons.Default.CheckCircle,
++                                            contentDescription = null,
++                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
++                                                .copy(alpha = 0.4f),
++                                            modifier = Modifier.size(20.dp),
++                                        )
++                                    } else {
++                                        Icon(
++                                            if (isSelected) Icons.Default.CheckCircle
++                                            else Icons.Default.RadioButtonUnchecked,
++                                            contentDescription = null,
++                                            tint = if (isSelected) {
++                                                MaterialTheme.colorScheme.primary
++                                            } else {
++                                                MaterialTheme.colorScheme.onSurfaceVariant
++                                                    .copy(alpha = 0.4f)
++                                            },
++                                            modifier = Modifier.size(20.dp),
++                                        )
++                                    }
++                                    Spacer(Modifier.width(10.dp))
++                                    Column(modifier = Modifier.weight(1f)) {
++                                        Text(
++                                            model.displayName,
++                                            style = MaterialTheme.typography.bodyLarge,
++                                            fontWeight = FontWeight.Medium,
++                                            color = if (alreadyAdded) {
++                                                MaterialTheme.colorScheme.onSurfaceVariant
++                                            } else {
++                                                MaterialTheme.colorScheme.onSurface
++                                            },
++                                        )
++                                        Text(
++                                            model.id,
++                                            style = MaterialTheme.typography.bodySmall.copy(
++                                                fontFamily = FontFamily.Monospace,
++                                            ),
++                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
++                                        )
++                                    }
++                                    if (alreadyAdded) {
++                                        Text(
++                                            stringResource(R.string.fork_fetch_already_added),
++                                            style = MaterialTheme.typography.labelSmall,
++                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
++                                        )
++                                    }
++                                }
++                                Row(modifier = Modifier.padding(start = 30.dp)) {
++                                    ForkModelCapabilityRow(model)
++                                }
++                            }
++                            HorizontalDivider(
++                                modifier = Modifier.padding(horizontal = 20.dp),
++                                thickness = 0.5.dp,
++                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
++                            )
++                        }
++                    }
++                }
++            }
++
++            // ── Confirm ─────────────────────────────────────────────────
++            if (!isLoading && errorMessage == null && catalog.isNotEmpty()) {
++                MinisButton(
++                    onClick = {
++                        val picks = catalog.filter { it.id in selected }
++                        val added = ProviderCatalogFetcher.addSelected(
++                            instance.id,
++                            picks,
++                            providerRepository,
++                        )
++                        // getString on the Context, not a pre-resolved
++                        // stringResource: the count is only known here, and
++                        // patching a formatted string after the fact would
++                        // corrupt any translation whose text contains the same
++                        // digits.
++                        android.widget.Toast.makeText(
++                            context,
++                            context.getString(R.string.fork_fetch_added_toast, added),
++                            android.widget.Toast.LENGTH_SHORT,
++                        ).show()
++                        scope.launch { sheetState.hide() }
++                        onDismiss()
++                    },
++                    enabled = selected.isNotEmpty(),
++                    modifier = Modifier
++                        .fillMaxWidth()
++                        .padding(horizontal = 20.dp, vertical = 12.dp)
++                        .navigationBarsPadding(),
++                ) {
++                    Text(
++                        if (selected.isEmpty()) {
++                            stringResource(R.string.fork_fetch_add_none)
++                        } else {
++                            stringResource(R.string.fork_fetch_add_selected, selected.size)
++                        },
++                    )
++                }
++            } else {
++                Spacer(Modifier.height(12.dp).navigationBarsPadding())
++            }
++        }
++    }
++}
+diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsTab.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsTab.kt
+new file mode 100644
+index 0000000..6bc41fa
+--- /dev/null
++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsTab.kt
+@@ -0,0 +1,332 @@
++package com.openminis.app.ui.settings.mods
++
++import androidx.compose.foundation.ExperimentalFoundationApi
++import androidx.compose.foundation.combinedClickable
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.heightIn
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
++import androidx.compose.material.icons.filled.Add
++import androidx.compose.material.icons.filled.CloudDownload
++import androidx.compose.material.icons.filled.Close
++import androidx.compose.material.icons.filled.Delete
++import androidx.compose.material.icons.filled.Search
++import androidx.compose.material.icons.filled.Visibility
++import androidx.compose.material.icons.filled.VisibilityOff
++import androidx.compose.material3.DropdownMenu
++import androidx.compose.material3.DropdownMenuItem
++import androidx.compose.material3.ExperimentalMaterial3Api
++import androidx.compose.material3.HorizontalDivider
++import androidx.compose.material3.Icon
++import androidx.compose.material3.IconButton
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedTextField
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.collectAsState
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.draw.alpha
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.text.font.FontFamily
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.unit.dp
++import com.openminis.app.R
++import com.openminis.app.data.model.ModelEntry
++import com.openminis.app.data.repository.ProviderRepository
++import com.openminis.app.logging.AppLogger
++import com.openminis.app.ui.components.MinisAlertDialog
++import com.openminis.app.ui.components.MinisOutlinedButton
++import com.openminis.app.ui.settings.SettingsSection
++
++/**
++ * [FORK] The "模型" tab of the provider screen — kelive-style.
++ *
++ * Differences from upstream's model section, which this replaces:
++ *
++ *  - No one-tap "refresh everything". Upstream's `Refresh model list` row calls
++ *    `refreshModels`, which REPLACES the instance's entry list with whatever the
++ *    endpoint returns. Point a provider at a relay fronting 400 models and the
++ *    picker becomes unusable, with no way to opt out. Here 获取模型 opens a
++ *    sheet, you tick what you want, and only those are added
++ *    ([ProviderCatalogFetcher]).
++ *  - Search, because a list you curate is still a list you have to find things
++ *    in.
++ *  - Per-row hide / delete stays available (long-press), same semantics as
++ *    upstream: built-in entries can be hidden but not deleted, since the repo
++ *    re-creates them from `ProviderType.builtInModels` on the next refresh.
++ *
++ * Rendered as the CONTENT of the shared tabbed scaffold, so the top bar and the
++ * bottom 配置/模型 bar are owned by [ProviderDetailTabbedScreen].
++ */
++@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
++@Composable
++fun ProviderModelsTabContent(
++    instanceId: String,
++    providerRepository: ProviderRepository,
++    onModelEntryClick: (String) -> Unit,
++    onAddCustomModel: () -> Unit,
++) {
++    val config by providerRepository.config.collectAsState()
++    val instance = config.instances.find { it.id == instanceId } ?: return
++
++    var searchQuery by remember { mutableStateOf("") }
++    var showFetchSheet by remember { mutableStateOf(false) }
++    var menuEntryId by remember { mutableStateOf<String?>(null) }
++    var entryToDelete by remember { mutableStateOf<ModelEntry?>(null) }
++
++    val allEntries = providerRepository.entriesFor(instanceId)
++    val q = searchQuery.trim().lowercase()
++    val entries = if (q.isEmpty()) {
++        allEntries
++    } else {
++        allEntries.filter {
++            it.model.displayName.lowercase().contains(q) || it.model.id.lowercase().contains(q)
++        }
++    }
++
++    // ── Actions ─────────────────────────────────────────────────────────
++    Row(
++        modifier = Modifier
++            .fillMaxWidth()
++            .padding(horizontal = 16.dp)
++            .padding(top = 16.dp),
++        horizontalArrangement = Arrangement.spacedBy(12.dp),
++    ) {
++        MinisOutlinedButton(
++            onClick = { showFetchSheet = true },
++            modifier = Modifier.weight(1f),
++        ) {
++            Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
++            Spacer(Modifier.width(6.dp))
++            Text(stringResource(R.string.fork_models_fetch))
++        }
++        MinisOutlinedButton(
++            onClick = onAddCustomModel,
++            modifier = Modifier.weight(1f),
++        ) {
++            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
++            Spacer(Modifier.width(6.dp))
++            Text(stringResource(R.string.fork_models_add_custom))
++        }
++    }
++
++    // ── Search ──────────────────────────────────────────────────────────
++    // Only once the list is big enough to need it; a 3-model provider showing a
++    // search box is noise.
++    if (allEntries.size >= 6) {
++        OutlinedTextField(
++            value = searchQuery,
++            onValueChange = { searchQuery = it },
++            placeholder = { Text(stringResource(R.string.fork_models_search_placeholder)) },
++            singleLine = true,
++            shape = RoundedCornerShape(50),
++            modifier = Modifier
++                .fillMaxWidth()
++                .padding(horizontal = 16.dp)
++                .padding(top = 12.dp),
++            leadingIcon = {
++                Icon(
++                    Icons.Default.Search,
++                    contentDescription = null,
++                    modifier = Modifier.size(18.dp),
++                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
++                )
++            },
++            trailingIcon = {
++                if (searchQuery.isNotEmpty()) {
++                    IconButton(onClick = { searchQuery = "" }) {
++                        Icon(
++                            Icons.Default.Close,
++                            contentDescription = stringResource(R.string.fork_models_clear_search),
++                            modifier = Modifier.size(18.dp),
++                        )
++                    }
++                }
++            },
++        )
++    }
++
++    // ── List ────────────────────────────────────────────────────────────
++    val header = if (q.isEmpty()) {
++        stringResource(R.string.fork_models_count, allEntries.size)
++    } else {
++        stringResource(R.string.fork_models_count_filtered, entries.size, allEntries.size)
++    }
++
++    if (allEntries.isEmpty()) {
++        SettingsSection(header = header) {
++            Text(
++                stringResource(R.string.fork_models_empty),
++                style = MaterialTheme.typography.bodyMedium,
++                color = MaterialTheme.colorScheme.onSurfaceVariant,
++                modifier = Modifier.padding(16.dp),
++            )
++        }
++    } else if (entries.isEmpty()) {
++        SettingsSection(header = header) {
++            Text(
++                stringResource(R.string.fork_models_empty_search, searchQuery.trim()),
++                style = MaterialTheme.typography.bodyMedium,
++                color = MaterialTheme.colorScheme.onSurfaceVariant,
++                modifier = Modifier.padding(16.dp),
++            )
++        }
++    } else {
++        SettingsSection(header = header) {
++            entries.forEachIndexed { idx, entry ->
++                Box(modifier = Modifier.fillMaxWidth()) {
++                    Column(
++                        modifier = Modifier
++                            .fillMaxWidth()
++                            // Hidden entries dim, matching upstream's treatment;
++                            // alpha is visual only so the row stays tappable to
++                            // un-hide from the detail screen.
++                            .then(if (entry.isHidden) Modifier.alpha(0.45f) else Modifier)
++                            .combinedClickable(
++                                onClick = { onModelEntryClick(entry.id) },
++                                onLongClick = { menuEntryId = entry.id },
++                            )
++                            .heightIn(min = 72.dp)
++                            .padding(horizontal = 14.dp, vertical = 10.dp),
++                        verticalArrangement = Arrangement.spacedBy(4.dp),
++                    ) {
++                        Row(verticalAlignment = Alignment.CenterVertically) {
++                            ForkProviderDot(instance.providerType)
++                            Spacer(Modifier.width(8.dp))
++                            Text(
++                                entry.model.displayName,
++                                style = MaterialTheme.typography.bodyLarge,
++                                fontWeight = FontWeight.Medium,
++                                modifier = Modifier.weight(1f),
++                            )
++                            if (entry.isHidden) {
++                                Text(
++                                    stringResource(R.string.fork_models_hidden_badge),
++                                    style = MaterialTheme.typography.labelSmall,
++                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
++                                )
++                                Spacer(Modifier.width(4.dp))
++                            }
++                            Icon(
++                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
++                                contentDescription = null,
++                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
++                                modifier = Modifier.size(20.dp),
++                            )
++                        }
++                        Text(
++                            entry.model.id,
++                            style = MaterialTheme.typography.bodySmall.copy(
++                                fontFamily = FontFamily.Monospace,
++                            ),
++                            color = MaterialTheme.colorScheme.onSurfaceVariant,
++                        )
++                        ForkModelCapabilityRow(entry.model)
++                    }
++
++                    DropdownMenu(
++                        expanded = menuEntryId == entry.id,
++                        onDismissRequest = { menuEntryId = null },
++                    ) {
++                        DropdownMenuItem(
++                            text = {
++                                Text(
++                                    stringResource(
++                                        if (entry.isHidden) R.string.provider_detail_show_model
++                                        else R.string.provider_detail_hide_model,
++                                    ),
++                                )
++                            },
++                            leadingIcon = {
++                                Icon(
++                                    if (entry.isHidden) Icons.Filled.Visibility
++                                    else Icons.Filled.VisibilityOff,
++                                    contentDescription = null,
++                                )
++                            },
++                            onClick = {
++                                menuEntryId = null
++                                providerRepository.updateEntry(entry.copy(isHidden = !entry.isHidden))
++                                AppLogger.info(
++                                    "ForkModels",
++                                    "entry ${entry.id} isHidden ${entry.isHidden} -> ${!entry.isHidden}",
++                                )
++                            },
++                        )
++                        // Only custom entries can be deleted — the repo
++                        // re-creates built-ins from ProviderType.builtInModels
++                        // on the next refresh, so "delete" on one would silently
++                        // undo itself. Hiding is the supported way out.
++                        if (entry.isCustom) {
++                            DropdownMenuItem(
++                                text = {
++                                    Text(
++                                        stringResource(R.string.common_delete),
++                                        color = MaterialTheme.colorScheme.error,
++                                    )
++                                },
++                                leadingIcon = {
++                                    Icon(
++                                        Icons.Filled.Delete,
++                                        contentDescription = null,
++                                        tint = MaterialTheme.colorScheme.error,
++                                    )
++                                },
++                                onClick = {
++                                    menuEntryId = null
++                                    entryToDelete = entry
++                                },
++                            )
++                        }
++                    }
++                }
++                if (idx != entries.lastIndex) {
++                    HorizontalDivider(
++                        modifier = Modifier.padding(start = 14.dp, end = 14.dp),
++                        thickness = 0.5.dp,
++                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
++                    )
++                }
++            }
++        }
++    }
++
++    Spacer(Modifier.height(24.dp))
++
++    if (showFetchSheet) {
++        ProviderModelsFetchSheet(
++            instance = instance,
++            providerRepository = providerRepository,
++            onDismiss = { showFetchSheet = false },
++        )
++    }
++
++    entryToDelete?.let { e ->
++        MinisAlertDialog(
++            onDismissRequest = { entryToDelete = null },
++            title = stringResource(R.string.provider_detail_delete_model),
++            text = stringResource(R.string.provider_detail_delete_model_confirm, e.model.displayName),
++            confirmText = stringResource(R.string.common_delete),
++            isDestructive = true,
++            onConfirm = {
++                providerRepository.removeEntry(e.id)
++                entryToDelete = null
++            },
++        )
++    }
++}
+diff --git a/src/android/app/src/main/res/values-zh/strings_fork.xml b/src/android/app/src/main/res/values-zh/strings_fork.xml
+new file mode 100644
+index 0000000..f6d104d
+--- /dev/null
++++ b/src/android/app/src/main/res/values-zh/strings_fork.xml
+@@ -0,0 +1,46 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- FORK-ONLY string resources — 简体中文。见 values/strings_fork.xml 的说明。 -->
++<resources>
++    <!-- 服务商详情 — 底部标签 -->
++    <string name="fork_tab_config">配置</string>
++    <string name="fork_tab_models">模型</string>
++
++    <!-- API Key 区块 -->
++    <string name="provider_detail_key_copied">已复制到剪贴板</string>
++    <string name="provider_detail_key_not_set">未设置</string>
++
++    <!-- 模型标签页 -->
++    <string name="fork_models_title">模型</string>
++    <string name="fork_models_fetch">获取模型</string>
++    <string name="fork_models_add_custom">手动添加</string>
++    <string name="fork_models_search_placeholder">搜索模型</string>
++    <string name="fork_models_clear_search">清除搜索</string>
++    <string name="fork_models_count">%1$d 个模型</string>
++    <string name="fork_models_count_filtered">%1$d / %2$d 个模型</string>
++    <string name="fork_models_empty">还没有模型。点「获取模型」拉取服务商目录并挑选需要的，或手动添加一个。</string>
++    <string name="fork_models_empty_search">没有匹配「%1$s」的模型。</string>
++    <string name="fork_models_enabled">已启用</string>
++    <string name="fork_models_hidden_badge">已隐藏</string>
++
++    <!-- 获取模型面板 -->
++    <string name="fork_fetch_title">获取模型</string>
++    <string name="fork_fetch_subtitle">勾选要添加的模型，确认后才会写入。</string>
++    <string name="fork_fetch_loading">正在从服务商获取…</string>
++    <string name="fork_fetch_retry">重试</string>
++    <string name="fork_fetch_failed">获取失败：%1$s</string>
++    <string name="fork_fetch_empty">服务商没有返回任何模型。</string>
++    <string name="fork_fetch_select_all">全选</string>
++    <string name="fork_fetch_clear_selection">清空</string>
++    <string name="fork_fetch_add_selected">添加 %1$d 个</string>
++    <string name="fork_fetch_add_none">添加</string>
++    <string name="fork_fetch_already_added">已添加</string>
++    <string name="fork_fetch_added_toast">已添加 %1$d 个模型</string>
++    <string name="fork_fetch_found">共 %1$d 个模型</string>
++
++    <!-- 能力标签 -->
++    <string name="fork_chip_chat">聊天</string>
++    <string name="fork_chip_reasoning">思考</string>
++
++    <!-- 添加服务商 -->
++    <string name="fork_add_provider_ua_footer">部分网关会拒绝默认 User-Agent，只放行官方客户端。除非你的端点有要求，留空即可。</string>
++</resources>
+diff --git a/src/android/app/src/main/res/values/strings_fork.xml b/src/android/app/src/main/res/values/strings_fork.xml
+new file mode 100644
+index 0000000..b8e9cf0
+--- /dev/null
++++ b/src/android/app/src/main/res/values/strings_fork.xml
+@@ -0,0 +1,53 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!--
++  FORK-ONLY string resources.
++
++  Kept in a SEPARATE file from strings.xml on purpose: Android merges every
++  values/*.xml at build time, so the fork can add copy without ever touching
++  the file upstream edits on nearly every release. Zero merge-conflict surface.
++  See docs/FORK.md §3.
++-->
++<resources>
++    <!-- Provider detail — bottom tabs -->
++    <string name="fork_tab_config">Config</string>
++    <string name="fork_tab_models">Models</string>
++
++    <!-- API key block -->
++    <string name="provider_detail_key_copied">Copied to clipboard</string>
++    <string name="provider_detail_key_not_set">Not set</string>
++
++    <!-- Models tab -->
++    <string name="fork_models_title">Models</string>
++    <string name="fork_models_fetch">Fetch Models</string>
++    <string name="fork_models_add_custom">Add Manually</string>
++    <string name="fork_models_search_placeholder">Search models</string>
++    <string name="fork_models_clear_search">Clear search</string>
++    <string name="fork_models_count">%1$d models</string>
++    <string name="fork_models_count_filtered">%1$d / %2$d models</string>
++    <string name="fork_models_empty">No models yet. Tap “Fetch Models” to pull the provider catalog and pick the ones you want, or add one manually.</string>
++    <string name="fork_models_empty_search">No model matches “%1$s”.</string>
++    <string name="fork_models_enabled">Enabled</string>
++    <string name="fork_models_hidden_badge">Hidden</string>
++
++    <!-- Fetch sheet -->
++    <string name="fork_fetch_title">Fetch Models</string>
++    <string name="fork_fetch_subtitle">Pick the models to add. Nothing is added until you confirm.</string>
++    <string name="fork_fetch_loading">Fetching from provider…</string>
++    <string name="fork_fetch_retry">Retry</string>
++    <string name="fork_fetch_failed">Fetch failed: %1$s</string>
++    <string name="fork_fetch_empty">The provider returned no models.</string>
++    <string name="fork_fetch_select_all">Select all</string>
++    <string name="fork_fetch_clear_selection">Clear</string>
++    <string name="fork_fetch_add_selected">Add %1$d selected</string>
++    <string name="fork_fetch_add_none">Add</string>
++    <string name="fork_fetch_already_added">Added</string>
++    <string name="fork_fetch_added_toast">Added %1$d model(s)</string>
++    <string name="fork_fetch_found">Found %1$d models</string>
++
++    <!-- Capability chips -->
++    <string name="fork_chip_chat">chat</string>
++    <string name="fork_chip_reasoning">think</string>
++
++    <!-- Add provider -->
++    <string name="fork_add_provider_ua_footer">Some gateways reject the default User-Agent and only accept official clients. Leave blank unless your endpoint requires a specific one.</string>
++</resources>
