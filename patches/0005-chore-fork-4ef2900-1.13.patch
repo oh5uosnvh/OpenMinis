@@ -1,0 +1,3165 @@
+From 558497901be8939dd34518b5519216010169b07a Mon Sep 17 00:00:00 2001
+From: oh5uosnvh <oh5uosnvh@users.noreply.github.com>
+Date: Fri, 4 Sep 2026 10:29:15 +0800
+Subject: [PATCH 5/6] =?UTF-8?q?chore(fork):=20=E8=A1=A5=E4=B8=81=E5=BF=AB?=
+ =?UTF-8?q?=E7=85=A7=EF=BC=88=E4=B8=8A=E6=B8=B8=204ef2900=20/=201.13?=
+ =?UTF-8?q?=EF=BC=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ patches/0001-build-fork-CI.patch        | 1043 ++++++++++++++++
+ patches/0002-feat-provider.patch        |  364 ++++++
+ patches/0003-feat-models.patch          | 1473 +++++++++++++++++++++++
+ patches/0004-feat-provider-UA-Key.patch |  187 +++
+ patches/README.md                       |   45 +
+ 5 files changed, 3112 insertions(+)
+ create mode 100644 patches/0001-build-fork-CI.patch
+ create mode 100644 patches/0002-feat-provider.patch
+ create mode 100644 patches/0003-feat-models.patch
+ create mode 100644 patches/0004-feat-provider-UA-Key.patch
+ create mode 100644 patches/README.md
+
+diff --git a/patches/0001-build-fork-CI.patch b/patches/0001-build-fork-CI.patch
+new file mode 100644
+index 0000000..9d9d472
+--- /dev/null
++++ b/patches/0001-build-fork-CI.patch
+@@ -0,0 +1,1043 @@
++From d9cfc3d91fd576c88abd8891719f46bcb13b2982 Mon Sep 17 00:00:00 2001
++From: oh5uosnvh <oh5uosnvh@users.noreply.github.com>
++Date: Fri, 4 Sep 2026 10:27:14 +0800
++Subject: [PATCH 1/4] =?UTF-8?q?build(fork):=20CI=20=E5=87=BA=E5=8C=85=20+?=
++ =?UTF-8?q?=20=E4=B8=8A=E6=B8=B8=E5=90=8C=E6=AD=A5=E6=B5=81=E6=B0=B4?=
++ =?UTF-8?q?=E7=BA=BF?=
++MIME-Version: 1.0
++Content-Type: text/plain; charset=UTF-8
++Content-Transfer-Encoding: 8bit
++
++以「可重放补丁串」而非散落编辑的方式维护本 fork，让上游发新版时能以最小
++改动快速出新 APK。
++
++分支模型（docs/FORK.md）：
++  main   纯上游镜像，fast-forward only，永不手改
++  mods   我们的补丁串，始终 rebase 在 upstream/main 之上，CI 从这里出包
++  patches/ 每次同步成功后的 .patch 快照，rebase 冲突时的救生艇
++
++.github/workflows/build-apk.yml
++  上游刻意不提交构建产物（BUILDING.md），所以 APK 需要的东西全在 CI 现做：
++    proot + libtalloc  → deps/build_proot.sh（NDK 交叉编译，带缓存）
++    Alpine rootfs      → scripts/prepare_android_sandbox.sh（带缓存）
++    rclone.aar         → scripts/fork/prepare-rclone.sh
++    provider-customization.properties ← 从 .example 复制（空值可编译可运行）
++
++.github/workflows/sync-upstream.yml
++  fetch upstream → main 前进 → mods rebase → 导出 patches → force-with-lease
++  推送。冲突时不推 mods，而是把冲突现场推到 rebase-failed/<sha> 并开 Issue
++  列出冲突文件 —— 失败要留下可诊断的现场，不是一句 "rebase failed"。
++
++scripts/fork/prepare-rclone.sh
++  app/build.gradle.kts 里 `implementation(group="", name="rclone", ext="aar")`
++  在 configure 阶段就要求这个 .aar 存在，缺了连 Kotlin 都编译不到。默认用
++  gomobile 真构建；失败自动降级为一个 501 stub（API 形状与 gomobile 生成的
++  一致），结果是只有远程备份不可用，其余功能不受影响，并在构建摘要里写明。
++  一个 Go 依赖抖动不该让整个 APK 出不来。
++
++scripts/fork/ndk-version.init.gradle.kts
++  app 模块有 externalNativeBuild 但没设 ndkVersion，AGP 会退回自己的默认版本
++  并在缺失时直接失败。用 --init-script 从项目外注入，而不是改 build.gradle.kts
++  —— 后者是上游几乎每个版本都动的文件，为一行 CI 管道换来永久冲突不值得。
++
++scripts/fork/shasum-shim.sh
++  deps/build_proot.sh 用 `shasum -a 256` 校验 vendored Termux loader，那是
++  macOS 的命令；Linux runner 上映射到 coreutils 的 sha256sum。
++---
++ .github/workflows/build-apk.yml          | 214 +++++++++++++++++++++++
++ .github/workflows/sync-upstream.yml      | 159 +++++++++++++++++
++ .gitignore                               |   4 +
++ docs/FORK.md                             | 137 +++++++++++++++
++ scripts/fork/export-patches.sh           |  64 +++++++
++ scripts/fork/ndk-version.init.gradle.kts |  41 +++++
++ scripts/fork/prepare-rclone.sh           | 190 ++++++++++++++++++++
++ scripts/fork/shasum-shim.sh              |  28 +++
++ scripts/fork/sync-upstream.sh            |  85 +++++++++
++ 9 files changed, 922 insertions(+)
++ create mode 100644 .github/workflows/build-apk.yml
++ create mode 100644 .github/workflows/sync-upstream.yml
++ create mode 100644 docs/FORK.md
++ create mode 100755 scripts/fork/export-patches.sh
++ create mode 100644 scripts/fork/ndk-version.init.gradle.kts
++ create mode 100755 scripts/fork/prepare-rclone.sh
++ create mode 100755 scripts/fork/shasum-shim.sh
++ create mode 100755 scripts/fork/sync-upstream.sh
++
++diff --git a/.github/workflows/build-apk.yml b/.github/workflows/build-apk.yml
++new file mode 100644
++index 0000000..10cb023
++--- /dev/null
+++++ b/.github/workflows/build-apk.yml
++@@ -0,0 +1,214 @@
+++name: Build Android APK
+++
+++# [FORK] Builds the魔改 APK from the `mods` branch.
+++#
+++# Everything the APK needs beyond the git tree is produced HERE, because
+++# upstream deliberately does not commit build artifacts (see BUILDING.md):
+++#   * proot + libtalloc          → deps/build_proot.sh          (NDK, cached)
+++#   * Alpine aarch64 rootfs      → scripts/prepare_android_sandbox.sh (cached)
+++#   * rclone.aar                 → scripts/fork/prepare-rclone.sh (gomobile,
+++#                                  falls back to a 501 stub so one flaky Go
+++#                                  build can't sink the whole APK)
+++#   * provider-customization.properties → copied from the .example (empty values
+++#                                  compile and run; only Claude OAuth needs a
+++#                                  real value)
+++
+++on:
+++  workflow_dispatch:
+++    inputs:
+++      build_type:
+++        description: "Gradle build type"
+++        type: choice
+++        default: release
+++        options: [release, debug]
+++      rclone:
+++        description: "rclone.aar (real = full remote backup, stub = disabled)"
+++        type: choice
+++        default: real
+++        options: [real, stub]
+++      make_release:
+++        description: "Publish the APK as a GitHub Release"
+++        type: boolean
+++        default: true
+++  push:
+++    branches: [mods]
+++    paths:
+++      - "src/android/**"
+++      - "src/shared/**"
+++      - "deps/**"
+++      - "scripts/**"
+++      - ".github/workflows/build-apk.yml"
+++
+++permissions:
+++  contents: write
+++
+++concurrency:
+++  group: build-apk-${{ github.ref }}
+++  cancel-in-progress: true
+++
+++jobs:
+++  build:
+++    runs-on: ubuntu-latest
+++    timeout-minutes: 90
+++
+++    env:
+++      BUILD_TYPE: ${{ inputs.build_type || 'release' }}
+++      RCLONE_MODE: ${{ inputs.rclone || 'real' }}
+++      # Pinned via the fork's init script, NOT build.gradle.kts — see
+++      # scripts/fork/ndk-version.init.gradle.kts.
+++      FORK_NDK_VERSION: "28.1.13356709"
+++
+++    steps:
+++      - name: Checkout (with submodules)
+++        uses: actions/checkout@v4
+++        with:
+++          submodules: recursive
+++          fetch-depth: 0
+++
+++      - name: Set up JDK 17
+++        uses: actions/setup-java@v4
+++        with:
+++          distribution: temurin
+++          java-version: "17"
+++
+++      - name: Set up Go (for the rclone gomobile binding)
+++        if: env.RCLONE_MODE == 'real'
+++        uses: actions/setup-go@v5
+++        with:
+++          go-version: "1.25"
+++          cache: false
+++
+++      - name: Set up Android SDK
+++        uses: android-actions/setup-android@v3
+++
+++      - name: Install NDK ${{ env.FORK_NDK_VERSION }} + CMake
+++        run: |
+++          set -eux
+++          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+++          sdkmanager --install \
+++            "ndk;${FORK_NDK_VERSION}" \
+++            "cmake;3.22.1" \
+++            "platforms;android-36" \
+++            "build-tools;35.0.0"
+++          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${FORK_NDK_VERSION}" >> "$GITHUB_ENV"
+++          echo "ANDROID_NDK_ROOT=${ANDROID_SDK_ROOT}/ndk/${FORK_NDK_VERSION}" >> "$GITHUB_ENV"
+++
+++      - name: Build-time customization (empty values, as upstream ships)
+++        run: |
+++          set -eux
+++          cp -n src/android/app/provider-customization.properties.example \
+++                src/android/app/provider-customization.properties || true
+++
+++      # ── Native deps ────────────────────────────────────────────────────
+++      # Keyed on the scripts + submodule commits: a change to either must
+++      # invalidate the cache, otherwise a stale proot silently ships.
+++      - name: Cache sandbox artifacts
+++        id: cache-sandbox
+++        uses: actions/cache@v4
+++        with:
+++          path: |
+++            src/android/app/src/main/assets/proot-aarch64
+++            src/android/app/src/main/assets/alpine-minirootfs.tar.gz
+++            src/android/app/src/main/jniLibs/arm64-v8a/libproot.so
+++            deps/build/proot-android
+++            deps/talloc
+++          key: sandbox-${{ runner.os }}-ndk${{ env.FORK_NDK_VERSION }}-${{ hashFiles('deps/build_proot.sh', 'scripts/prepare_android_sandbox.sh', '.gitmodules') }}-${{ hashFiles('.git/modules/deps/proot/HEAD') }}
+++
+++      - name: Build proot (+ libtalloc)
+++        run: |
+++          set -eux
+++          # deps/build_proot.sh verifies the vendored Termux loaders with
+++          # `shasum -a 256` (a macOS-ism). Ubuntu runners ship it via perl, but
+++          # provide a shim if this image ever doesn't.
+++          if ! command -v shasum >/dev/null 2>&1; then
+++            sudo install -m 0755 scripts/fork/shasum-shim.sh /usr/local/bin/shasum
+++          fi
+++          bash deps/build_proot.sh
+++
+++      - name: Prepare Alpine rootfs asset
+++        run: bash scripts/prepare_android_sandbox.sh
+++
+++      - name: Cache Go build (rclone)
+++        if: env.RCLONE_MODE == 'real'
+++        uses: actions/cache@v4
+++        with:
+++          path: |
+++            ~/.cache/go-build
+++            ~/go/pkg/mod
+++            ~/go/bin
+++          key: go-rclone-${{ runner.os }}-${{ hashFiles('deps/rclone-mobile/go.sum') }}
+++
+++      - name: Prepare rclone.aar (${{ env.RCLONE_MODE }})
+++        run: bash scripts/fork/prepare-rclone.sh "${RCLONE_MODE}"
+++
+++      # ── Gradle ─────────────────────────────────────────────────────────
+++      - name: Set up Gradle
+++        uses: gradle/actions/setup-gradle@v4
+++        with:
+++          build-root-directory: src/android
+++
+++      - name: Assemble ${{ env.BUILD_TYPE }} APK
+++        working-directory: src/android
+++        run: |
+++          set -eux
+++          TASK="assembleRelease"
+++          [ "$BUILD_TYPE" = "debug" ] && TASK="assembleDebug"
+++          ./gradlew --no-daemon --stacktrace \
+++            --init-script ../../scripts/fork/ndk-version.init.gradle.kts \
+++            ":app:${TASK}"
+++
+++      - name: Locate and name the APK
+++        id: apk
+++        run: |
+++          set -eux
+++          APK="$(find src/android/app/build/outputs/apk -name '*.apk' -type f | head -1)"
+++          test -n "$APK"
+++          VER="$(grep -m1 'versionName' src/android/app/build.gradle.kts | sed 's/[^"]*"\([^"]*\)".*/\1/')"
+++          SHORT="$(git rev-parse --short HEAD)"
+++          NAME="OpenMinis-mods-${VER}-${SHORT}-arm64-v8a.apk"
+++          mkdir -p dist && cp "$APK" "dist/${NAME}"
+++          echo "path=dist/${NAME}" >> "$GITHUB_OUTPUT"
+++          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+++          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+++          echo "short=${SHORT}" >> "$GITHUB_OUTPUT"
+++          {
+++            echo "## APK"
+++            echo "- \`${NAME}\`"
+++            echo "- size: $(du -h "dist/${NAME}" | cut -f1)"
+++            echo "- upstream version: ${VER}"
+++          } >> "$GITHUB_STEP_SUMMARY"
+++
+++      - name: Upload artifact
+++        uses: actions/upload-artifact@v4
+++        with:
+++          name: ${{ steps.apk.outputs.name }}
+++          path: ${{ steps.apk.outputs.path }}
+++          retention-days: 30
+++
+++      - name: Publish GitHub Release
+++        if: ${{ inputs.make_release }}
+++        env:
+++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+++          APK_PATH: ${{ steps.apk.outputs.path }}
+++          APK_VERSION: ${{ steps.apk.outputs.version }}
+++          APK_SHORT: ${{ steps.apk.outputs.short }}
+++        run: |
+++          set -eux
+++          TAG="mods-${APK_VERSION}-${APK_SHORT}"
+++          # Notes go through a file rather than an inline multi-line argument:
+++          # a `\`-continued shell command with an embedded newline inside a
+++          # quoted string is exactly the shape that makes this YAML unparseable.
+++          cat > /tmp/notes.md <<NOTES
+++          自动构建于 \`mods\` 分支（上游 ${APK_VERSION}）。
+++
+++          魔改内容：
+++          - 服务商页面底部固定「配置 / 模型」双标签
+++          - 模型改为手动「获取模型」+ 勾选添加，不再一键灌入全部模型
+++          - 添加服务商时即可填写自定义 User-Agent
+++          - API Key 全量明文显示、可换行，编辑态按钮为 取消 · 复制 · 保存
+++          NOTES
+++          sed -i 's/^          //' /tmp/notes.md
+++          gh release create "$TAG" "$APK_PATH" \
+++            --title "魔改版 ${APK_VERSION} (${APK_SHORT})" \
+++            --notes-file /tmp/notes.md \
+++            || gh release upload "$TAG" "$APK_PATH" --clobber
++diff --git a/.github/workflows/sync-upstream.yml b/.github/workflows/sync-upstream.yml
++new file mode 100644
++index 0000000..42dd3a5
++--- /dev/null
+++++ b/.github/workflows/sync-upstream.yml
++@@ -0,0 +1,159 @@
+++name: Sync Upstream
+++
+++# [FORK] Rebase the魔改 onto a newer upstream release.
+++#
+++# Contract:
+++#   main   — pure upstream mirror, fast-forward only. Never hand-edited.
+++#   mods   — our patches, always rebased onto upstream/main. History IS rewritten
+++#            (that is what "a patch series against current upstream" means).
+++#   patches/ — .patch snapshot of `mods` after every successful sync, so a future
+++#            conflict can be inspected patch-by-patch instead of archaeologically.
+++#
+++# On conflict nothing is force-pushed: the conflicting state is pushed to
+++# `rebase-failed/<upstream-sha>` and an Issue is opened listing the files.
+++
+++on:
+++  workflow_dispatch:
+++    inputs:
+++      upstream_ref:
+++        description: "Upstream ref to sync to (branch, tag or SHA)"
+++        default: "main"
+++      dry_run:
+++        description: "Rebase and report, but do not push"
+++        type: boolean
+++        default: false
+++  schedule:
+++    # 03:20 UTC ≈ 11:20 Asia/Shanghai, Mondays.
+++    - cron: "20 3 * * 1"
+++
+++permissions:
+++  contents: write
+++  issues: write
+++
+++concurrency:
+++  group: sync-upstream
+++  cancel-in-progress: false
+++
+++jobs:
+++  sync:
+++    runs-on: ubuntu-latest
+++    timeout-minutes: 30
+++
+++    env:
+++      UPSTREAM_URL: https://github.com/OpenMinis/OpenMinis.git
+++      UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+++      DRY_RUN: ${{ inputs.dry_run && 'yes' || 'no' }}
+++
+++    steps:
+++      - name: Checkout mods
+++        uses: actions/checkout@v4
+++        with:
+++          ref: mods
+++          fetch-depth: 0
+++          persist-credentials: true
+++
+++      - name: Configure git
+++        run: |
+++          git config user.name "fork-sync[bot]"
+++          git config user.email "fork-sync@users.noreply.github.com"
+++
+++      - name: Fetch upstream
+++        id: fetch
+++        run: |
+++          set -eux
+++          git remote add upstream "$UPSTREAM_URL" 2>/dev/null || \
+++            git remote set-url upstream "$UPSTREAM_URL"
+++          git fetch upstream --tags --prune
+++          TARGET="$(git rev-parse "upstream/${UPSTREAM_REF}" 2>/dev/null || git rev-parse "${UPSTREAM_REF}")"
+++          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+++          echo "short=$(git rev-parse --short "$TARGET")" >> "$GITHUB_OUTPUT"
+++          BASE="$(git merge-base HEAD "$TARGET" || true)"
+++          if [ "$BASE" = "$TARGET" ]; then
+++            echo "uptodate=yes" >> "$GITHUB_OUTPUT"
+++          else
+++            echo "uptodate=no" >> "$GITHUB_OUTPUT"
+++          fi
+++          {
+++            echo "## Upstream"
+++            echo "- ref: \`${UPSTREAM_REF}\` → \`$(git rev-parse --short "$TARGET")\`"
+++            echo "- subject: $(git log -1 --format=%s "$TARGET")"
+++          } >> "$GITHUB_STEP_SUMMARY"
+++
+++      - name: Already up to date
+++        if: steps.fetch.outputs.uptodate == 'yes'
+++        run: echo "- mods already contains this upstream ref; nothing to do." >> "$GITHUB_STEP_SUMMARY"
+++
+++      - name: Rebase mods onto upstream
+++        if: steps.fetch.outputs.uptodate == 'no'
+++        id: rebase
+++        run: |
+++          set -x
+++          # The fork's commits are exactly those not in upstream's history.
+++          COUNT="$(git rev-list --count "${{ steps.fetch.outputs.target }}..HEAD")"
+++          echo "- fork commits to replay: ${COUNT}" >> "$GITHUB_STEP_SUMMARY"
+++
+++          if git rebase "${{ steps.fetch.outputs.target }}"; then
+++            echo "ok=yes" >> "$GITHUB_OUTPUT"
+++            exit 0
+++          fi
+++
+++          echo "ok=no" >> "$GITHUB_OUTPUT"
+++          {
+++            echo "### ⚠️ Rebase conflict"
+++            echo ""
+++            echo "Conflicting paths:"
+++            echo '```'
+++            git diff --name-only --diff-filter=U || true
+++            echo '```'
+++          } >> "$GITHUB_STEP_SUMMARY"
+++          git diff --name-only --diff-filter=U > /tmp/conflicts.txt || true
+++          # Leave the working tree mid-rebase so the branch push below captures it.
+++          exit 0
+++
+++      - name: Push conflict state + open issue
+++        if: steps.rebase.outputs.ok == 'no'
+++        env:
+++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+++        run: |
+++          set -eux
+++          BRANCH="rebase-failed/${{ steps.fetch.outputs.short }}"
+++          # Commit the conflict markers verbatim — the point is to hand a human
+++          # an inspectable tree, not a clean one.
+++          git add -A
+++          git commit -m "wip: rebase conflict onto upstream ${{ steps.fetch.outputs.short }}" || true
+++          git push -f origin "HEAD:refs/heads/${BRANCH}"
+++          BODY="$(printf '自动 rebase 到上游 `%s` 失败。\n\n冲突文件：\n```\n%s\n```\n\n冲突现场已推到分支 `%s`。\n\n处理方式见 docs/FORK.md §4：原则是**上游实现优先**，我们只在新的上游代码上重新打同样的挂钩。\n' \
+++            "${{ steps.fetch.outputs.short }}" "$(cat /tmp/conflicts.txt 2>/dev/null || echo unknown)" "$BRANCH")"
+++          gh issue create \
+++            --title "同步失败：rebase 到上游 ${{ steps.fetch.outputs.short }} 有冲突" \
+++            --body "$BODY" \
+++            --label "upstream-sync" || echo "$BODY"
+++          exit 1
+++
+++      - name: Export patch snapshot
+++        if: steps.rebase.outputs.ok == 'yes'
+++        run: |
+++          set -eux
+++          bash scripts/fork/export-patches.sh "${{ steps.fetch.outputs.target }}"
+++          git add patches
+++          git commit -m "chore(fork): refresh patch snapshot for upstream ${{ steps.fetch.outputs.short }}" || true
+++
+++      - name: Push
+++        if: steps.rebase.outputs.ok == 'yes' && env.DRY_RUN == 'no'
+++        run: |
+++          set -eux
+++          # main tracks upstream verbatim.
+++          git push origin "${{ steps.fetch.outputs.target }}:refs/heads/main" --force
+++          # mods was rebased, so its history changed by definition.
+++          git push --force-with-lease origin HEAD:refs/heads/mods
+++          {
+++            echo "### ✅ Synced"
+++            echo "- \`main\` → upstream \`${{ steps.fetch.outputs.short }}\`"
+++            echo "- \`mods\` rebased and force-pushed"
+++            echo ""
+++            echo "下一步：Actions → **Build Android APK** 出包。"
+++          } >> "$GITHUB_STEP_SUMMARY"
+++
+++      - name: Dry run summary
+++        if: steps.rebase.outputs.ok == 'yes' && env.DRY_RUN == 'yes'
+++        run: echo "### ✅ Rebase succeeded (dry run — nothing pushed)" >> "$GITHUB_STEP_SUMMARY"
++diff --git a/.gitignore b/.gitignore
++index 0077225..6283e5c 100644
++--- a/.gitignore
+++++ b/.gitignore
++@@ -146,3 +146,7 @@ deps/lame-3.100/**/.deps/
++ # not a vendored binary — same treatment as the iOS Rclone.xcframework it is
++ # built alongside (deps/build_rclone_ios.sh).
++ src/android/app/libs/rclone.aar
+++
+++# [FORK] rclone.aar is produced by scripts/fork/prepare-rclone.sh at build time
+++# (real gomobile build, or a 501 stub). Never commit it — see docs/FORK.md §5.
+++deps/build/rclone-stub/
++diff --git a/docs/FORK.md b/docs/FORK.md
++new file mode 100644
++index 0000000..3cb9f69
++--- /dev/null
+++++ b/docs/FORK.md
++@@ -0,0 +1,137 @@
+++# Fork 维护手册（oh5uosnvh/OpenMinis）
+++
+++本 fork 的目标：**在上游 OpenMinis/OpenMinis 持续更新的前提下，用最小改动快速产出带私有魔改的 APK。**
+++
+++为此，改动不以「一堆散落的编辑」形式存在，而是一串**可以重放到任意上游版本之上的补丁**（patch series）。
+++
+++---
+++
+++## 1. 分支模型
+++
+++| 分支 | 角色 | 谁来写 |
+++|---|---|---|
+++| `main` | **纯上游镜像**。永不手改，只由 sync workflow fast-forward 到 `upstream/main` | 自动 |
+++| `mods` | **我们的全部改动**，始终 rebase 在 `upstream/main` 之上。CI 从这里构建 APK。**这是本 fork 的默认分支** | 人 + CI |
+++| `patches/` | 每次成功同步后自动导出的 `.patch` 快照（rebase 失败时的救生艇） | 自动 |
+++
+++`mods` 被设为**默认分支**，原因是 GitHub 的硬性限制：`workflow_dispatch`（手动点 Run
+++workflow）只认默认分支上的 workflow 文件。如果默认分支是纯净的 `main`，那我们的
+++CI 就必须把 workflow 也塞进 `main`，`main` 就不再是纯镜像了。把默认分支换成
+++`mods` 同时满足两件事：手动触发可用，`main` 保持逐字节等于上游。
+++
+++`mods` 是一条**会被改写历史的分支**（rebase → force-push）。这是设计使然，不是事故：
+++它代表「相对于当前上游的改动集」，而不是一条线性开发史。
+++
+++```
+++upstream/main ──●──●──●──●  (1.13)          ──●──●──●  (1.14)
+++                          ╲                          ╲
+++mods                       ●─●─●  (我们的 4 个补丁)    ●─●─●  (rebase 后同样 4 个补丁)
+++```
+++
+++---
+++
+++## 2. 上游发新版时怎么做
+++
+++### 方式 A：GitHub Actions（推荐，零本地环境）
+++
+++1. Actions → **Sync Upstream** → Run workflow
+++2. 成功：`main` 前进、`mods` 自动 rebase 并 force-push、`patches/` 更新
+++3. 失败：workflow 会创建一个 Issue，列出冲突文件，并把冲突现场推到
+++   `rebase-failed/<上游sha>` 分支供手工解决
+++4. 然后 Actions → **Build Android APK** → Run workflow 出包
+++
+++### 方式 B：本地
+++
+++```sh
+++# 一条命令完成 fetch + main 前进 + mods rebase + 导出 patches
+++./scripts/fork/sync-upstream.sh
+++
+++# 只导出补丁快照
+++./scripts/fork/export-patches.sh
+++```
+++
+++---
+++
+++## 3. 降冲突的三条硬规则
+++
+++写任何新功能前先读这一节。违反它 = 每次上游更新都要手工合并。
+++
+++### 规则 1：新功能写进**新文件**
+++
+++新增 UI/逻辑一律建新文件（本 fork 的魔改文件统一带 `Mods` 后缀或放在 `mods/` 包下）。
+++新文件永远不会和上游冲突 —— 上游不认识它。
+++
+++### 规则 2：上游文件里只留「加参数 + 默认值」式挂钩
+++
+++允许：
+++
+++```kotlin
+++fun ProviderDetailScreen(
+++    instanceId: String,
+++    // ...上游原有参数...
+++    showModelsSection: Boolean = true,   // ← fork 挂钩：加参数 + 默认值
+++) {
+++```
+++
+++禁止：重排上游代码块、改上游函数签名的既有参数顺序、大段搬移。
+++Git 三方合并对「在参数列表末尾加一行」几乎不会冲突；对「搬移代码块」几乎必然冲突。
+++
+++### 规则 3：挂钩点必须登记在案
+++
+++**当前 fork 触碰的上游文件（冲突面全集）：**
+++
+++| 上游文件 | 改动 | 说明 |
+++|---|---|---|
+++| `ui/settings/ProviderDetailScreen.kt` | 末尾加 4 个带默认值的参数（`showModelsSection` / `bottomBar` / `showBackArrow` / `title`）；模型区块包一层 `if`；`ApiKeyCredentialBlock` 改为全量明文 + 复制按钮 | 模型区块交给「模型」Tab 渲染 |
+++| `ui/settings/AddProviderScreen.kt` | Endpoint 段内新增自定义 UA 输入；Key 输入改明文换行；保存时写入 UA + 手动标记，去掉自动全量拉取 | 修上游「添加时没有 UA、添加完才冒出来」的反人类逻辑 |
+++| `ui/settings/SettingsComponents.kt` | `SettingsScaffold` 加 `bottomBar` 参数（带默认值） | 底部 Tab 的唯一挂钩点 |
+++| `ui/navigation/AppNavigation.kt` | `PROVIDER_DETAIL` 路由改指向 `ProviderDetailTabbedScreen` | 1 处 |
+++| `data/repository/ProviderRepository.kt` | `autoRefreshModels` 开头加手动策略跳过 | 防止后台刷新回灌全部模型 |
+++
+++**fork 独有的新文件（零冲突）：**
+++
+++- `ui/settings/mods/ProviderDetailTabs.kt` —— 底部「配置 / 模型」固定 Tab + 能力标签
+++- `ui/settings/mods/ProviderDetailTabbedScreen.kt` —— Tab 宿主，配置页直接复用上游实现
+++- `ui/settings/mods/ProviderModelsTab.kt` —— kelive 风格模型管理页
+++- `ui/settings/mods/ProviderModelsFetchSheet.kt` —— 获取模型 + 勾选面板
+++- `ui/settings/mods/ProviderCatalogFetcher.kt` —— 只读目录抓取（fetch 与写入分离）
+++- `ui/settings/mods/ForkModelPolicy.kt` —— 「此服务商模型由用户手动管理」标记
+++- `res/values*/strings_fork.xml` —— fork 专属文案，**不碰上游 strings.xml**
+++- `.github/workflows/*.yml`、`scripts/fork/*`、`docs/FORK.md`
+++
+++上游改了上表四个文件的**同一区域**时才会冲突。真冲突了，按 §4 处理。
+++
+++---
+++
+++## 4. rebase 冲突了怎么办
+++
+++```sh
+++git checkout mods
+++git rebase upstream/main
+++# 冲突：
+++git status                     # 看哪些文件
+++# 解决后
+++git add <files> && git rebase --continue
+++```
+++
+++判断原则：**上游的实现优先**。我们的补丁只应保留「挂钩 + 新文件引用」，
+++如果上游把某段逻辑重写了，就在新的上游代码上重新打一次同样的挂钩，
+++而不是把上游代码回退成旧版。
+++
+++救生艇：`patches/` 下有上一次成功状态的 `.patch`，可以 `git am -3` 逐个重放，
+++比在 rebase 冲突现场硬啃更容易看清「我们到底改了什么」。
+++
+++---
+++
+++## 5. 构建产物
+++
+++- Workflow：**Build Android APK**（`.github/workflows/build-apk.yml`）
+++- 原生依赖在 CI 里现建 + 缓存：
+++  - `deps/build_proot.sh` → `libproot.so` + 两个 loader（NDK 交叉编译）
+++  - `scripts/prepare_android_sandbox.sh` → Alpine rootfs 资产
+++  - `deps/build_rclone_android.sh` → `rclone.aar`（gomobile；失败时自动降级为
+++    stub，只影响远程备份，其余功能不受影响，构建摘要里会写明）
+++- `provider-customization.properties` 用 example 空值填充：**能编译能跑**，
+++  只有 Claude OAuth 登录这一条路径需要真值（详见 `BUILDING.md`）。
+++- 不修改 `build.gradle.kts` 里的 `versionCode`/`versionName` —— 那是高频冲突点。
+++  APK 文件名由 CI 用 `git describe` 生成，版本号跟随上游。
++diff --git a/scripts/fork/export-patches.sh b/scripts/fork/export-patches.sh
++new file mode 100755
++index 0000000..be80280
++--- /dev/null
+++++ b/scripts/fork/export-patches.sh
++@@ -0,0 +1,64 @@
+++#!/usr/bin/env bash
+++# [FORK] Export the fork's commits as a .patch series under patches/.
+++#
+++# Why keep patches in the repo at all, when git already has the commits?
+++# Because after a rebase-with-conflicts the commits are the thing you can no
+++# longer read cleanly. A flat, reviewable series answers "what did we actually
+++# change?" in seconds, and `git am -3` can replay it onto any upstream tree
+++# when a rebase gets too tangled to salvage.
+++#
+++# Usage:
+++#   export-patches.sh [upstream-ref]     # default: upstream/main
+++set -euo pipefail
+++
+++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+++cd "$ROOT"
+++
+++BASE="${1:-upstream/main}"
+++OUT="patches"
+++
+++if ! git rev-parse --verify "$BASE" >/dev/null 2>&1; then
+++  echo "error: '$BASE' is not a valid ref. Add the upstream remote first:" >&2
+++  echo "  git remote add upstream https://github.com/OpenMinis/OpenMinis.git && git fetch upstream" >&2
+++  exit 1
+++fi
+++
+++MERGE_BASE="$(git merge-base HEAD "$BASE")"
+++COUNT="$(git rev-list --count "${MERGE_BASE}..HEAD")"
+++
+++rm -rf "$OUT"
+++mkdir -p "$OUT"
+++
+++if [ "$COUNT" -eq 0 ]; then
+++  echo "no fork commits on top of $BASE — nothing to export"
+++  printf 'No fork commits relative to %s (%s).\n' "$BASE" "$(git rev-parse --short "$MERGE_BASE")" > "$OUT/README.md"
+++  exit 0
+++fi
+++
+++git format-patch --no-signature -o "$OUT" "${MERGE_BASE}..HEAD" >/dev/null
+++
+++{
+++  echo "# Fork patch series"
+++  echo
+++  echo "Generated by \`scripts/fork/export-patches.sh\` — do not hand-edit."
+++  echo
+++  echo "- upstream base: \`$(git rev-parse --short "$MERGE_BASE")\` ($(git log -1 --format=%s "$MERGE_BASE"))"
+++  echo "- patches: ${COUNT}"
+++  echo
+++  echo "Replay onto a fresh upstream checkout:"
+++  echo
+++  echo '```sh'
+++  echo "git am -3 patches/*.patch"
+++  echo '```'
+++  echo
+++  echo "## Commits"
+++  echo
+++  git log --reverse --format='- `%h` %s' "${MERGE_BASE}..HEAD"
+++  echo
+++  echo "## Files touched"
+++  echo
+++  git diff --stat "${MERGE_BASE}..HEAD" | sed 's/^/    /'
+++} > "$OUT/README.md"
+++
+++echo "exported ${COUNT} patch(es) to ${OUT}/"
+++ls -1 "$OUT"
++diff --git a/scripts/fork/ndk-version.init.gradle.kts b/scripts/fork/ndk-version.init.gradle.kts
++new file mode 100644
++index 0000000..93c6fbc
++--- /dev/null
+++++ b/scripts/fork/ndk-version.init.gradle.kts
++@@ -0,0 +1,41 @@
+++// [FORK] Pin the NDK the Android build uses, WITHOUT editing build.gradle.kts.
+++//
+++// The app module declares an externalNativeBuild (pty_bridge, the crash
+++// handler, jieba_jni) but does not set `ndkVersion`, so AGP falls back to its
+++// own default version and fails the build if that exact version is not
+++// installed. Pinning it in build.gradle.kts would work but puts the fork's edit
+++// in a file upstream touches on nearly every release — a permanent merge
+++// conflict for one line of CI plumbing.
+++//
+++// An init script is applied with `--init-script` from OUTSIDE the project, so
+++// this file is invisible to git's view of the upstream tree: zero conflict
+++// surface (docs/FORK.md §3 规则 1).
+++//
+++// Usage:
+++//   FORK_NDK_VERSION=28.1.13356709 \
+++//     ./gradlew --init-script ../../scripts/fork/ndk-version.init.gradle.kts :app:assembleRelease
+++//
+++// No FORK_NDK_VERSION → no-op, so a local build behaves exactly like upstream.
+++
+++val forkNdkVersion: String? = System.getenv("FORK_NDK_VERSION")?.takeIf { it.isNotBlank() }
+++
+++if (forkNdkVersion != null) {
+++    gradle.beforeProject {
+++        plugins.withId("com.android.application") {
+++            extensions.findByName("android")?.let { ext ->
+++                // Reflection rather than a typed cast: this init script is
+++                // compiled without AGP on its classpath, so
+++                // `com.android.build.api.dsl.ApplicationExtension` is not a
+++                // resolvable type here.
+++                runCatching {
+++                    ext.javaClass.methods
+++                        .first { it.name == "setNdkVersion" && it.parameterCount == 1 }
+++                        .invoke(ext, forkNdkVersion)
+++                    logger.lifecycle("[fork] ndkVersion pinned to $forkNdkVersion for $path")
+++                }.onFailure {
+++                    logger.warn("[fork] could not pin ndkVersion: ${it.message}")
+++                }
+++            }
+++        }
+++    }
+++}
++diff --git a/scripts/fork/prepare-rclone.sh b/scripts/fork/prepare-rclone.sh
++new file mode 100755
++index 0000000..170c811
++--- /dev/null
+++++ b/scripts/fork/prepare-rclone.sh
++@@ -0,0 +1,190 @@
+++#!/usr/bin/env bash
+++# [FORK] Make `rclone.aar` available to the Gradle build.
+++#
+++# `src/android/app/build.gradle.kts` declares
+++#     implementation(group = "", name = "rclone", ext = "aar")
+++# resolved from the flatDir repo `app/libs`. Upstream treats that .aar as a
+++# BUILD ARTIFACT (it is gitignored), produced by `deps/build_rclone_android.sh`
+++# via gomobile. Without it the build fails at configuration time — before a
+++# single line of Kotlin is compiled — so CI must produce something.
+++#
+++# Two modes:
+++#
+++#   real  (default) Build it for real with gomobile. Needs Go + the NDK and a
+++#         few minutes on a cold module cache. Full remote-backup support.
+++#   stub  Synthesise a minimal .aar exposing the exact gomobile-generated API
+++#         surface (com.openminis.rclone.gomobile.Gomobile / RcloneRPCResult)
+++#         with every RPC answering HTTP 501. The app compiles and runs; ONLY
+++#         remote backup destinations (SMB/WebDAV/SFTP/S3/FTP) are unavailable,
+++#         and they fail with a clear message instead of crashing.
+++#
+++# `real` automatically falls back to `stub` so a Go/gomobile hiccup degrades one
+++# feature instead of failing the whole APK build. The chosen mode is written to
+++# $GITHUB_STEP_SUMMARY when running in Actions.
+++#
+++# Usage: prepare-rclone.sh [real|stub]
+++set -uo pipefail
+++
+++MODE="${1:-real}"
+++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+++LIBS_DIR="$ROOT/src/android/app/libs"
+++OUT_AAR="$LIBS_DIR/rclone.aar"
+++WORK="$ROOT/deps/build/rclone-stub"
+++
+++mkdir -p "$LIBS_DIR"
+++
+++note() {
+++  echo "[prepare-rclone] $*"
+++  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+++    echo "- rclone: $*" >> "$GITHUB_STEP_SUMMARY"
+++  fi
+++}
+++
+++build_real() {
+++  command -v go >/dev/null 2>&1 || { echo "[prepare-rclone] no go toolchain"; return 1; }
+++
+++  if ! command -v gomobile >/dev/null 2>&1; then
+++    echo "[prepare-rclone] installing gomobile/gobind…"
+++    go install golang.org/x/mobile/cmd/gomobile@latest || return 1
+++    go install golang.org/x/mobile/cmd/gobind@latest || return 1
+++    export PATH="$PATH:$(go env GOPATH)/bin"
+++  fi
+++
+++  bash "$ROOT/deps/build_rclone_android.sh" || return 1
+++
+++  local built="$ROOT/deps/build/rclone/rclone.aar"
+++  [ -f "$built" ] || return 1
+++  cp -f "$built" "$OUT_AAR"
+++  return 0
+++}
+++
+++build_stub() {
+++  command -v javac >/dev/null 2>&1 || {
+++    echo "[prepare-rclone] FATAL: javac not found; cannot even build the stub" >&2
+++    return 1
+++  }
+++  rm -rf "$WORK"
+++  mkdir -p "$WORK/src/com/openminis/rclone/gomobile" "$WORK/classes" "$WORK/aar"
+++
+++  # The API shape is dictated by gomobile's binding of
+++  # deps/rclone-mobile/gomobile/gomobile.go:
+++  #   func RcloneInitialize()            -> static void rcloneInitialize()
+++  #   func RcloneFinalize()              -> static void rcloneFinalize()
+++  #   type RcloneRPCResult{Output string; Status int}
+++  #                                      -> getOutput():String / getStatus():long
+++  #                                         (gobind maps Go int to Java long)
+++  #   func RcloneRPC(m, in string) *RcloneRPCResult
+++  # Keep these signatures byte-compatible or RcloneBridge.kt stops compiling.
+++  cat > "$WORK/src/com/openminis/rclone/gomobile/RcloneRPCResult.java" <<'JAVA'
+++package com.openminis.rclone.gomobile;
+++
+++/** Stub mirror of the gomobile-generated result type. */
+++public final class RcloneRPCResult {
+++    private String output;
+++    private long status;
+++
+++    public RcloneRPCResult() {
+++    }
+++
+++    public RcloneRPCResult(String output, long status) {
+++        this.output = output;
+++        this.status = status;
+++    }
+++
+++    public String getOutput() {
+++        return output;
+++    }
+++
+++    public void setOutput(String value) {
+++        this.output = value;
+++    }
+++
+++    public long getStatus() {
+++        return status;
+++    }
+++
+++    public void setStatus(long value) {
+++        this.status = value;
+++    }
+++}
+++JAVA
+++
+++  cat > "$WORK/src/com/openminis/rclone/gomobile/Gomobile.java" <<'JAVA'
+++package com.openminis.rclone.gomobile;
+++
+++/**
+++ * Stub of the gomobile rclone binding.
+++ *
+++ * This build was produced WITHOUT the real rclone library, so every RPC answers
+++ * HTTP 501 with a JSON error. RcloneBridge turns a non-200 status into
+++ * RPCException carrying the `error` field, which the backup UI already surfaces
+++ * — so remote destinations report "unavailable in this build" instead of
+++ * crashing, and every other feature is unaffected.
+++ */
+++public final class Gomobile {
+++    private Gomobile() {
+++    }
+++
+++    private static final String ERROR_JSON =
+++        "{\"error\":\"rclone is not bundled in this build; remote backup destinations are unavailable\"}";
+++
+++    public static void rcloneInitialize() {
+++    }
+++
+++    public static void rcloneFinalize() {
+++    }
+++
+++    public static RcloneRPCResult rcloneRPC(String method, String input) {
+++        return new RcloneRPCResult(ERROR_JSON, 501L);
+++    }
+++}
+++JAVA
+++
+++  javac -source 17 -target 17 -nowarn \
+++        -d "$WORK/classes" \
+++        "$WORK/src/com/openminis/rclone/gomobile/RcloneRPCResult.java" \
+++        "$WORK/src/com/openminis/rclone/gomobile/Gomobile.java" || return 1
+++
+++  ( cd "$WORK/classes" && jar cf "$WORK/aar/classes.jar" . ) || return 1
+++
+++  cat > "$WORK/aar/AndroidManifest.xml" <<'XML'
+++<?xml version="1.0" encoding="utf-8"?>
+++<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+++    package="com.openminis.rclone">
+++    <uses-sdk android:minSdkVersion="26" />
+++</manifest>
+++XML
+++
+++  mkdir -p "$WORK/aar/res"
+++  # An .aar is just a zip: manifest + classes.jar + (empty) res/ + R.txt.
+++  : > "$WORK/aar/R.txt"
+++  ( cd "$WORK/aar" && rm -f "$OUT_AAR" && jar cfM "$OUT_AAR" AndroidManifest.xml classes.jar R.txt res ) || return 1
+++  return 0
+++}
+++
+++if [ -f "$OUT_AAR" ] && [ "${FORK_RCLONE_FORCE:-0}" != "1" ]; then
+++  note "reusing existing $(basename "$OUT_AAR") ($(du -h "$OUT_AAR" | cut -f1))"
+++  exit 0
+++fi
+++
+++case "$MODE" in
+++  stub)
+++    build_stub || exit 1
+++    note "**stub** — remote backup destinations disabled in this APK"
+++    ;;
+++  real)
+++    if build_real; then
+++      note "real gomobile build ($(du -h "$OUT_AAR" | cut -f1)) — full remote backup support"
+++    else
+++      echo "[prepare-rclone] real build failed; falling back to stub" >&2
+++      build_stub || exit 1
+++      note "**stub (fallback)** — the gomobile build failed, so remote backup destinations are disabled in this APK. Everything else is unaffected."
+++    fi
+++    ;;
+++  *)
+++    echo "usage: $0 [real|stub]" >&2
+++    exit 2
+++    ;;
+++esac
+++
+++ls -lh "$OUT_AAR"
++diff --git a/scripts/fork/shasum-shim.sh b/scripts/fork/shasum-shim.sh
++new file mode 100755
++index 0000000..0c4a09d
++--- /dev/null
+++++ b/scripts/fork/shasum-shim.sh
++@@ -0,0 +1,28 @@
+++#!/usr/bin/env bash
+++# [FORK] Minimal `shasum` stand-in for Linux CI.
+++#
+++# deps/build_proot.sh verifies the vendored Termux loaders with
+++# `shasum -a 256 <file>`. That command is standard on macOS (where upstream
+++# develops) but is not guaranteed on a Linux runner image. Map it onto
+++# coreutils' sha256sum, keeping the "<hash>  <path>" output shape the script's
+++# `awk '{print $1}'` expects.
+++set -euo pipefail
+++
+++algo=256
+++args=()
+++while [ $# -gt 0 ]; do
+++  case "$1" in
+++    -a) algo="$2"; shift 2 ;;
+++    -a*) algo="${1#-a}"; shift ;;
+++    *) args+=("$1"); shift ;;
+++  esac
+++done
+++
+++case "$algo" in
+++  1)   exec sha1sum "${args[@]}" ;;
+++  224) exec sha224sum "${args[@]}" ;;
+++  256) exec sha256sum "${args[@]}" ;;
+++  384) exec sha384sum "${args[@]}" ;;
+++  512) exec sha512sum "${args[@]}" ;;
+++  *)   echo "shasum-shim: unsupported algorithm $algo" >&2; exit 2 ;;
+++esac
++diff --git a/scripts/fork/sync-upstream.sh b/scripts/fork/sync-upstream.sh
++new file mode 100755
++index 0000000..dc3992d
++--- /dev/null
+++++ b/scripts/fork/sync-upstream.sh
++@@ -0,0 +1,85 @@
+++#!/usr/bin/env bash
+++# [FORK] Local equivalent of the Sync Upstream workflow.
+++#
+++#   main   ← fast-forwarded to upstream (pure mirror, never hand-edited)
+++#   mods   ← rebased on top of it (our patch series)
+++#   patches/ ← refreshed snapshot
+++#
+++# Nothing is pushed unless you pass --push, so you can inspect the result first.
+++#
+++# Usage:
+++#   scripts/fork/sync-upstream.sh [upstream-ref] [--push]
+++set -euo pipefail
+++
+++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+++cd "$ROOT"
+++
+++REF="main"
+++PUSH="no"
+++for arg in "$@"; do
+++  case "$arg" in
+++    --push) PUSH="yes" ;;
+++    *) REF="$arg" ;;
+++  esac
+++done
+++
+++info() { printf '\033[0;34m[sync]\033[0m %s\n' "$*"; }
+++fail() { printf '\033[0;31m[sync]\033[0m %s\n' "$*" >&2; exit 1; }
+++
+++git remote get-url upstream >/dev/null 2>&1 || \
+++  git remote add upstream https://github.com/OpenMinis/OpenMinis.git
+++
+++info "fetching upstream…"
+++git fetch upstream --tags --prune
+++
+++TARGET="$(git rev-parse "upstream/${REF}" 2>/dev/null || git rev-parse "$REF")"
+++info "target: $(git rev-parse --short "$TARGET")  $(git log -1 --format=%s "$TARGET")"
+++
+++# Refuse to operate on a dirty tree — a rebase would either fail confusingly or
+++# quietly fold uncommitted work into the series.
+++if [ -n "$(git status --porcelain)" ]; then
+++  fail "working tree is dirty; commit or stash first"
+++fi
+++
+++CURRENT="$(git rev-parse --abbrev-ref HEAD)"
+++if [ "$CURRENT" != "mods" ]; then
+++  info "switching to mods (was $CURRENT)"
+++  git checkout mods
+++fi
+++
+++BEFORE="$(git rev-parse HEAD)"
+++COUNT="$(git rev-list --count "${TARGET}..HEAD")"
+++info "fork commits to replay: ${COUNT}"
+++
+++if [ "$(git merge-base HEAD "$TARGET")" = "$TARGET" ]; then
+++  info "mods already contains this upstream ref — nothing to rebase"
+++else
+++  info "rebasing…"
+++  if ! git rebase "$TARGET"; then
+++    echo
+++    fail "rebase conflict. Resolve, then: git add <files> && git rebase --continue
+++Guidance: docs/FORK.md §4 — upstream's implementation wins; re-apply our hook on
+++top of the new upstream code rather than reverting theirs.
+++Abort with: git rebase --abort  (mods returns to ${BEFORE:0:8})"
+++  fi
+++fi
+++
+++info "updating local main to upstream…"
+++git branch -f main "$TARGET"
+++
+++info "refreshing patch snapshot…"
+++bash scripts/fork/export-patches.sh "$TARGET"
+++if [ -n "$(git status --porcelain patches)" ]; then
+++  git add patches
+++  git commit -m "chore(fork): refresh patch snapshot for upstream $(git rev-parse --short "$TARGET")"
+++fi
+++
+++if [ "$PUSH" = "yes" ]; then
+++  info "pushing…"
+++  git push origin "main:main" --force
+++  git push --force-with-lease origin mods:mods
+++  info "pushed. Next: Actions → Build Android APK"
+++else
+++  info "done (nothing pushed). Review with:  git log --oneline ${TARGET}..HEAD"
+++  info "then:  scripts/fork/sync-upstream.sh ${REF} --push"
+++fi
+diff --git a/patches/0002-feat-provider.patch b/patches/0002-feat-provider.patch
+new file mode 100644
+index 0000000..5583c59
+--- /dev/null
++++ b/patches/0002-feat-provider.patch
+@@ -0,0 +1,364 @@
++From e7745c8332d4f8ec9e4b1a52498e98792f1a621e Mon Sep 17 00:00:00 2001
++From: oh5uosnvh <oh5uosnvh@users.noreply.github.com>
++Date: Fri, 4 Sep 2026 10:27:31 +0800
++Subject: [PATCH 2/4] =?UTF-8?q?feat(provider):=20=E6=9C=8D=E5=8A=A1?=
++ =?UTF-8?q?=E5=95=86=E9=A1=B5=E5=BA=95=E9=83=A8=E5=9B=BA=E5=AE=9A=E3=80=8C?=
++ =?UTF-8?q?=E9=85=8D=E7=BD=AE=20/=20=E6=A8=A1=E5=9E=8B=E3=80=8D=E5=8F=8C?=
++ =?UTF-8?q?=E6=A0=87=E7=AD=BE?=
++MIME-Version: 1.0
++Content-Type: text/plain; charset=UTF-8
++Content-Transfer-Encoding: 8bit
++
++仿 kelive：服务商详情页底部常驻两个标签，配置与模型分开。
++
++做成常驻底栏而不是顶部分段控件，是因为这一页很长（名称、凭据、端点、API
++格式、Azure、图像端点、状态、语音、思考规则），顶部控件会在用户滚下去之后
++正好滑出视野 —— 而那正是想切换的时刻。
++
++上游侧只加了一个挂钩：SettingsScaffold 末尾多一个带默认值的 bottomBar 参数。
++所有既有调用点（含未来上游新增的）行为不变。
++
++配置标签直接渲染上游的 ProviderDetailScreen，不复制、不重写：那是 1200 行、
++上游几乎每个版本都会改的文件。宿主模式下上游对任何区块的改动都自动生效；
++复制一份则意味着永久手工合并。
++
++模型标签的系统返回键先回到配置标签，再退出服务商 —— 两个标签在用户认知里是
++同一个页面。
++---
++ .../app/ui/settings/SettingsComponents.kt     |   9 +
++ .../mods/ProviderDetailTabbedScreen.kt        |  93 ++++++++
++ .../ui/settings/mods/ProviderDetailTabs.kt    | 198 ++++++++++++++++++
++ 3 files changed, 300 insertions(+)
++ create mode 100644 src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabbedScreen.kt
++ create mode 100644 src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabs.kt
++
++diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/SettingsComponents.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/SettingsComponents.kt
++index 8dba149..6443fc7 100644
++--- a/src/android/app/src/main/java/com/openminis/app/ui/settings/SettingsComponents.kt
+++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/SettingsComponents.kt
++@@ -83,6 +83,13 @@ fun SettingsScaffold(
++     centerTitle: Boolean = false,
++     floatingActionButton: @Composable (() -> Unit)? = null,
++     scrollable: Boolean = true,
+++    // [FORK-HOOK bottom-tabs] Optional persistent bottom bar. Added as a
+++    // defaulted parameter so every existing caller compiles unchanged; the
+++    // fork's provider screen uses it to host the fixed 配置 / 模型 tab pair
+++    // (ui/settings/mods/ProviderDetailTabbedScreen.kt). Keeping it here rather
+++    // than nesting a second Scaffold inside the screen avoids double-counting
+++    // the navigation-bar inset.
+++    bottomBar: @Composable (() -> Unit)? = null,
++     content: @Composable ColumnScope.() -> Unit,
++ ) {
++     Scaffold(
++@@ -122,6 +129,8 @@ fun SettingsScaffold(
++             }
++         },
++         floatingActionButton = { floatingActionButton?.invoke() },
+++        // [FORK-HOOK bottom-tabs] see the parameter's comment.
+++        bottomBar = { bottomBar?.invoke() },
++         containerColor = MaterialTheme.colorScheme.background,
++     ) { padding ->
++         // T183: imePadding() shrinks the scroll container by the IME's
++diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabbedScreen.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabbedScreen.kt
++new file mode 100644
++index 0000000..e6abbed
++--- /dev/null
+++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabbedScreen.kt
++@@ -0,0 +1,93 @@
+++package com.openminis.app.ui.settings.mods
+++
+++import androidx.activity.compose.BackHandler
+++import androidx.compose.material3.ExperimentalMaterial3Api
+++import androidx.compose.runtime.Composable
+++import androidx.compose.runtime.collectAsState
+++import androidx.compose.runtime.getValue
+++import androidx.compose.runtime.mutableStateOf
+++import androidx.compose.runtime.saveable.rememberSaveable
+++import androidx.compose.runtime.setValue
+++import com.openminis.app.data.repository.ProviderRepository
+++import com.openminis.app.ui.settings.ProviderDetailScreen
+++import com.openminis.app.ui.settings.SettingsScaffold
+++
+++/**
+++ * [FORK] Host for the provider screen's two fixed bottom tabs.
+++ *
+++ * Replaces `ProviderDetailScreen` as the destination of the `provider/{id}`
+++ * route (one line in AppNavigation.kt — the entire upstream seam).
+++ *
+++ * Structure:
+++ *
+++ *   配置 tab → the upstream [ProviderDetailScreen] verbatim, with
+++ *              `showModelsSection = false` so its model list is suppressed,
+++ *              plus the bottom bar. Every other section (label, credential,
+++ *              endpoint, API format, Azure, image endpoint, status, voice,
+++ *              thinking rules) keeps upstream's behaviour, including future
+++ *              additions — we do not re-implement that page, we host it.
+++ *   模型 tab → [ProviderModelsTabContent], the fork's kelive-style list.
+++ *
+++ * Why reuse rather than fork the config page: it is 1200 lines that upstream
+++ * edits nearly every release. Hosting it means an upstream change to any
+++ * section lands for free; forking it would mean merging those changes by hand
+++ * forever. See docs/FORK.md §3.
+++ */
+++@OptIn(ExperimentalMaterial3Api::class)
+++@Composable
+++fun ProviderDetailTabbedScreen(
+++    instanceId: String,
+++    providerRepository: ProviderRepository,
+++    onBack: () -> Unit,
+++    onModelEntryClick: (String) -> Unit = {},
+++    onAddCustomModel: () -> Unit = {},
+++    onVoiceServiceClick: (String) -> Unit = {},
+++) {
+++    // rememberSaveable so a rotation (or process-death restore) keeps the user
+++    // on the tab they were reading.
+++    var tab by rememberSaveable { mutableStateOf(ProviderDetailTab.CONFIG) }
+++
+++    // On the 模型 tab, system back returns to 配置 first rather than leaving the
+++    // provider entirely — matches how the two tabs read as one screen.
+++    BackHandler(enabled = tab == ProviderDetailTab.MODELS) {
+++        tab = ProviderDetailTab.CONFIG
+++    }
+++
+++    val bottomBar: @Composable () -> Unit = {
+++        ProviderDetailBottomTabs(selected = tab, onSelect = { tab = it })
+++    }
+++
+++    when (tab) {
+++        ProviderDetailTab.CONFIG -> ProviderDetailScreen(
+++            instanceId = instanceId,
+++            providerRepository = providerRepository,
+++            onBack = onBack,
+++            onModelEntryClick = onModelEntryClick,
+++            onAddCustomModel = onAddCustomModel,
+++            onVoiceServiceClick = onVoiceServiceClick,
+++            showModelsSection = false,
+++            bottomBar = bottomBar,
+++        )
+++
+++        ProviderDetailTab.MODELS -> {
+++            val config by providerRepository.config.collectAsState()
+++            val instance = config.instances.find { it.id == instanceId }
+++            if (instance == null) {
+++                onBack()
+++            } else {
+++                SettingsScaffold(
+++                    title = instance.label,
+++                    onBack = onBack,
+++                    bottomBar = bottomBar,
+++                ) {
+++                    ProviderModelsTabContent(
+++                        instanceId = instanceId,
+++                        providerRepository = providerRepository,
+++                        onModelEntryClick = onModelEntryClick,
+++                        onAddCustomModel = onAddCustomModel,
+++                    )
+++                }
+++            }
+++        }
+++    }
+++}
++diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabs.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabs.kt
++new file mode 100644
++index 0000000..af2f886
++--- /dev/null
+++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderDetailTabs.kt
++@@ -0,0 +1,198 @@
+++package com.openminis.app.ui.settings.mods
+++
+++import androidx.compose.foundation.background
+++import androidx.compose.foundation.clickable
+++import androidx.compose.foundation.layout.Arrangement
+++import androidx.compose.foundation.layout.Box
+++import androidx.compose.foundation.layout.Column
+++import androidx.compose.foundation.layout.ExperimentalLayoutApi
+++import androidx.compose.foundation.layout.FlowRow
+++import androidx.compose.foundation.layout.Row
+++import androidx.compose.foundation.layout.fillMaxWidth
+++import androidx.compose.foundation.layout.height
+++import androidx.compose.foundation.layout.navigationBarsPadding
+++import androidx.compose.foundation.layout.padding
+++import androidx.compose.foundation.layout.size
+++import androidx.compose.foundation.shape.CircleShape
+++import androidx.compose.foundation.shape.RoundedCornerShape
+++import androidx.compose.material.icons.Icons
+++import androidx.compose.material.icons.filled.Settings
+++import androidx.compose.material.icons.filled.Layers
+++import androidx.compose.material3.Icon
+++import androidx.compose.material3.MaterialTheme
+++import androidx.compose.material3.Surface
+++import androidx.compose.material3.Text
+++import androidx.compose.runtime.Composable
+++import androidx.compose.ui.Alignment
+++import androidx.compose.ui.Modifier
+++import androidx.compose.ui.draw.clip
+++import androidx.compose.ui.graphics.vector.ImageVector
+++import androidx.compose.ui.res.stringResource
+++import androidx.compose.ui.text.font.FontWeight
+++import androidx.compose.ui.unit.dp
+++import com.openminis.app.R
+++import com.openminis.app.data.model.normalizeModalities
+++
+++/**
+++ * [FORK] The two fixed tabs at the bottom of the provider screen: 配置 / 模型.
+++ *
+++ * Modelled on kelive's provider page. The point of it being a PERSISTENT bar
+++ * rather than a segmented control at the top: on a page this long (label,
+++ * credential, endpoint, API format, Azure, image endpoint, status, voice,
+++ * thinking rules) the switcher has to stay reachable after the user has
+++ * scrolled — a top-anchored control scrolls away exactly when it is wanted.
+++ *
+++ * Lives in the fork's own file so upstream never touches it. The only upstream
+++ * seam it needs is `SettingsScaffold(bottomBar = …)`, one defaulted parameter.
+++ */
+++enum class ProviderDetailTab {
+++    CONFIG,
+++    MODELS,
+++}
+++
+++@Composable
+++fun ProviderDetailBottomTabs(
+++    selected: ProviderDetailTab,
+++    onSelect: (ProviderDetailTab) -> Unit,
+++) {
+++    Surface(
+++        color = MaterialTheme.colorScheme.surfaceContainerLow,
+++        // Hairline above the bar so it reads as chrome separated from the
+++        // scrolling content, not as another card in the list.
+++        tonalElevation = 3.dp,
+++    ) {
+++        Column {
+++            Box(
+++                modifier = Modifier
+++                    .fillMaxWidth()
+++                    .height(0.5.dp)
+++                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+++            )
+++            Row(
+++                modifier = Modifier
+++                    .fillMaxWidth()
+++                    .navigationBarsPadding()
+++                    .padding(vertical = 6.dp),
+++                verticalAlignment = Alignment.CenterVertically,
+++            ) {
+++                TabItem(
+++                    modifier = Modifier.weight(1f),
+++                    icon = Icons.Filled.Settings,
+++                    label = stringResource(R.string.fork_tab_config),
+++                    selected = selected == ProviderDetailTab.CONFIG,
+++                    onClick = { onSelect(ProviderDetailTab.CONFIG) },
+++                )
+++                TabItem(
+++                    modifier = Modifier.weight(1f),
+++                    icon = Icons.Filled.Layers,
+++                    label = stringResource(R.string.fork_tab_models),
+++                    selected = selected == ProviderDetailTab.MODELS,
+++                    onClick = { onSelect(ProviderDetailTab.MODELS) },
+++                )
+++            }
+++        }
+++    }
+++}
+++
+++@Composable
+++private fun TabItem(
+++    icon: ImageVector,
+++    label: String,
+++    selected: Boolean,
+++    onClick: () -> Unit,
+++    modifier: Modifier = Modifier,
+++) {
+++    val tint = if (selected) {
+++        MaterialTheme.colorScheme.primary
+++    } else {
+++        MaterialTheme.colorScheme.onSurfaceVariant
+++    }
+++    Column(
+++        modifier = modifier
+++            .clip(RoundedCornerShape(12.dp))
+++            .clickable(onClick = onClick)
+++            .padding(vertical = 6.dp),
+++        horizontalAlignment = Alignment.CenterHorizontally,
+++        verticalArrangement = Arrangement.spacedBy(2.dp),
+++    ) {
+++        Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(22.dp))
+++        Text(
+++            label,
+++            style = MaterialTheme.typography.labelMedium,
+++            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+++            color = tint,
+++        )
+++    }
+++}
+++
+++/**
+++ * [FORK] Small pill used on model rows for capability tags (chat / think /
+++ * img / audio …). Same visual recipe as upstream's `ModalityBadge` so the two
+++ * lists don't read as different apps, but declared here to keep the fork's
+++ * files self-contained.
+++ */
+++@Composable
+++fun ForkCapabilityChip(text: String, emphasized: Boolean = false) {
+++    Text(
+++        text,
+++        style = MaterialTheme.typography.labelSmall,
+++        maxLines = 1,
+++        softWrap = false,
+++        color = if (emphasized) {
+++            MaterialTheme.colorScheme.primary
+++        } else {
+++            MaterialTheme.colorScheme.onSurfaceVariant
+++        },
+++        modifier = Modifier
+++            .background(
+++                if (emphasized) {
+++                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+++                } else {
+++                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+++                },
+++                RoundedCornerShape(4.dp),
+++            )
+++            .padding(horizontal = 5.dp, vertical = 1.dp),
+++    )
+++}
+++
+++/**
+++ * [FORK] Capability tags for one model, in a stable order.
+++ * `chat` is unconditional — every entry in this list is a chat-capable model —
+++ * followed by reasoning, then the non-text modalities.
+++ */
+++@OptIn(ExperimentalLayoutApi::class)
+++@Composable
+++fun ForkModelCapabilityRow(model: com.openminis.app.data.model.LLMModel) {
+++    val chat = stringResource(R.string.fork_chip_chat)
+++    val think = stringResource(R.string.fork_chip_reasoning)
+++    val ins = model.inputModalities.normalizeModalities().orEmpty()
+++    val outs = model.outputModalities.normalizeModalities().orEmpty()
+++    FlowRow(
+++        horizontalArrangement = Arrangement.spacedBy(4.dp),
+++        verticalArrangement = Arrangement.spacedBy(4.dp),
+++    ) {
+++        ForkCapabilityChip(chat)
+++        if (model.supportsReasoning == true) ForkCapabilityChip(think, emphasized = true)
+++        if ("image" in ins) ForkCapabilityChip("img")
+++        if ("pdf" in ins) ForkCapabilityChip("pdf")
+++        if ("audio" in ins) ForkCapabilityChip("audio")
+++        if ("video" in ins) ForkCapabilityChip("video")
+++        if ("image" in outs) ForkCapabilityChip("img-out", emphasized = true)
+++        if ("audio" in outs) ForkCapabilityChip("audio-out", emphasized = true)
+++        if ("video" in outs) ForkCapabilityChip("video-out", emphasized = true)
+++    }
+++}
+++
+++/** Provider accent dot, matching upstream's palette. */
+++@Composable
+++fun ForkProviderDot(providerType: com.openminis.app.data.model.ProviderType?) {
+++    Box(
+++        modifier = Modifier
+++            .size(8.dp)
+++            .background(
+++                com.openminis.app.ui.components.providerDotColor(providerType),
+++                CircleShape,
+++            ),
+++    )
+++}
+diff --git a/patches/0003-feat-models.patch b/patches/0003-feat-models.patch
+new file mode 100644
+index 0000000..db35a13
+--- /dev/null
++++ b/patches/0003-feat-models.patch
+@@ -0,0 +1,1473 @@
++From 6a0483a02168bf453c7bc483e3d36ef26ae35c3d Mon Sep 17 00:00:00 2001
++From: oh5uosnvh <oh5uosnvh@users.noreply.github.com>
++Date: Fri, 4 Sep 2026 10:28:07 +0800
++Subject: [PATCH 3/4] =?UTF-8?q?feat(models):=20=E6=A8=A1=E5=9E=8B=E6=94=B9?=
++ =?UTF-8?q?=E4=B8=BA=E6=89=8B=E5=8A=A8=E3=80=8C=E8=8E=B7=E5=8F=96=E6=A8=A1?=
++ =?UTF-8?q?=E5=9E=8B=E3=80=8D+=20=E5=8B=BE=E9=80=89=E6=B7=BB=E5=8A=A0?=
++MIME-Version: 1.0
++Content-Type: text/plain; charset=UTF-8
++Content-Transfer-Encoding: 8bit
++
++替掉上游的一键加载全部模型。
++
++上游的刷新是 fetch-and-replace：refreshModels → replaceEntries 把该服务商的
++整个模型列表换成端点返回的全部内容。指向一个中转了 400 个模型的网关，选择器
++就没法用了，而且用户全程没有选择权。
++
++改成 fetch 与写入分离：
++  1. ProviderCatalogFetcher.fetchCatalog —— 纯读。走的是 refreshModels 用的
++     同一批 ModelsApi 对象（同样的鉴权、base URL、UA 处理，所以在那边能用的
++     中转在这边一样能用），返回列表，不写任何东西。
++  2. 用户在面板里勾选。已存在的模型显示「已添加」且不可选 —— 默认帮他勾上会
++     让确认按钮上的数字变成谎话。
++  3. addSelected 只写勾中的，走 addEntry（增量、按 baseModel.id 去重）。既有
++     条目的覆盖设置、隐藏标记、分组归属一概不动。
++
++两个把「用户的挑选结果」守住的点，都用上游已有的机制，不新造状态：
++
++  * addSelected 写入时标记 isCustom = true。看着别扭（这些不是手打的模型），
++    但 autoRefreshModels 会跳过任何拥有自定义条目的实例（上游原话 "so we
++    never overwrite hand-edited entries"），replaceEntries 也会显式保留它们
++    （remainingCustom）。代价是 models.dev 元数据冻结在抓取时刻 —— 可接受，
++    fetchCatalog 本身已经跑过 models.dev 增强，随时可以重新获取。丢失挑选
++    结果是真 bug，上下文窗口元数据略旧不是。
++
++  * ForkModelPolicy：一个独立 SharedPreferences 标记，表示「此实例的模型由
++    用户手动管理」。补的是另一个洞 —— refreshAllModelsIfNeeded 每个日历日从
++    MinisApp.onCreate 跑一次。没有这个标记，用户今天挑了 6 个模型，明天开
++    App 发现 400 个全回来了，表现为「App 自己乱加模型」：几小时后才发作、
++    毫无可见诱因，是最难查的那类。
++    用 prefs 而不是给 ProviderInstance 加字段：后者要串 ProviderConfig、Room
++    entity、ProviderConfigMapping、schema 版本号和一次迁移 —— 为一个布尔值在
++    上游改得最勤的几个文件里留永久冲突。prefs 对上游不可见、不需要迁移，且
++    降级正确：没有记录的实例（备份恢复、iOS 导入、旧版本创建）行为与上游一致。
++
++模型标签页（ProviderModelsTab）：获取模型 / 手动添加双按钮、列表超过 6 个才
++出搜索框（3 个模型还挂搜索框只是噪音）、长按隐藏/删除。删除依旧只对自定义
++条目开放 —— 内置条目会在下次刷新时被 ProviderType.builtInModels 重建，删了
++等于自我撤销，隐藏才是正解。
++
++添加服务商时不再自动拉取。纯 OAuth 登录路径保留上游的刷新：它解析到的是单一
++厂商的短目录（Codex 约 7 个、Claude 约 10 个），没什么需要保护用户的，立刻
++看到列表是更好的默认。带自定义 base + 静态 bearer 的中转路径与 API key 路径
++同等对待 —— 那正是可能中转几百个模型的地方。
++
++文案放在 res/values*/strings_fork.xml 而不是上游的 strings.xml：Android 构建
++时会合并 values/*.xml，所以 fork 的文案可以完全不碰上游每个版本都在改的那个
++文件，冲突面为零。
++---
++ .../app/data/repository/ProviderRepository.kt |  13 +
++ .../app/ui/navigation/AppNavigation.kt        |   6 +-
++ .../app/ui/settings/ProviderDetailScreen.kt   | 142 +++++--
++ .../app/ui/settings/mods/ForkModelPolicy.kt   |  60 +++
++ .../settings/mods/ProviderCatalogFetcher.kt   | 220 +++++++++++
++ .../settings/mods/ProviderModelsFetchSheet.kt | 374 ++++++++++++++++++
++ .../app/ui/settings/mods/ProviderModelsTab.kt | 332 ++++++++++++++++
++ .../src/main/res/values-zh/strings_fork.xml   |  46 +++
++ .../app/src/main/res/values/strings_fork.xml  |  53 +++
++ 9 files changed, 1205 insertions(+), 41 deletions(-)
++ create mode 100644 src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ForkModelPolicy.kt
++ create mode 100644 src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderCatalogFetcher.kt
++ create mode 100644 src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsFetchSheet.kt
++ create mode 100644 src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsTab.kt
++ create mode 100644 src/android/app/src/main/res/values-zh/strings_fork.xml
++ create mode 100644 src/android/app/src/main/res/values/strings_fork.xml
++
++diff --git a/src/android/app/src/main/java/com/openminis/app/data/repository/ProviderRepository.kt b/src/android/app/src/main/java/com/openminis/app/data/repository/ProviderRepository.kt
++index 6b45729..aeed545 100644
++--- a/src/android/app/src/main/java/com/openminis/app/data/repository/ProviderRepository.kt
+++++ b/src/android/app/src/main/java/com/openminis/app/data/repository/ProviderRepository.kt
++@@ -2311,6 +2311,19 @@ class ProviderRepository(private val context: Context) {
++      * so we never overwrite hand-edited entries. Mirrors iOS `autoRefreshModels(for:)`.
++      */
++     private suspend fun autoRefreshModels(instance: ProviderInstance) {
+++        // [FORK-HOOK manual-models] Instances created by the fork manage their
+++        // model list by hand (获取模型 + 勾选). A background refresh here would
+++        // call replaceEntries and swap the user's picks for the endpoint's whole
+++        // catalog — silently, a day after they curated it. Same intent as the
+++        // hasCustom skip immediately below, extended to instances that are
+++        // user-curated but not yet populated. See ForkModelPolicy.
+++        if (com.openminis.app.ui.settings.mods.ForkModelPolicy.isManual(context, instance.id)) {
+++            android.util.Log.i(
+++                "ProviderRepo",
+++                "[ModelList] autoRefresh SKIP ${instance.label} — fork manual model policy",
+++            )
+++            return
+++        }
++         val hasCustom = _config.value.modelEntries.any {
++             it.providerInstanceId == instance.id && it.isCustom
++         }
++diff --git a/src/android/app/src/main/java/com/openminis/app/ui/navigation/AppNavigation.kt b/src/android/app/src/main/java/com/openminis/app/ui/navigation/AppNavigation.kt
++index 2ef8646..8aa280e 100644
++--- a/src/android/app/src/main/java/com/openminis/app/ui/navigation/AppNavigation.kt
+++++ b/src/android/app/src/main/java/com/openminis/app/ui/navigation/AppNavigation.kt
++@@ -875,7 +875,11 @@ fun AppNavigation(
++             arguments = listOf(navArgument("instanceId") { type = NavType.StringType }),
++         ) { backStackEntry ->
++             val instanceId = backStackEntry.arguments?.getString("instanceId") ?: return@composable
++-            ProviderDetailScreen(
+++            // [FORK-HOOK provider-tabs] Route points at the fork's tabbed host
+++            // instead of ProviderDetailScreen directly. The host renders the
+++            // upstream screen for the 配置 tab, so this is the ONLY line the
+++            // fork changes in this file. See docs/FORK.md §3.
+++            com.openminis.app.ui.settings.mods.ProviderDetailTabbedScreen(
++                 instanceId = instanceId,
++                 providerRepository = providerRepository,
++                 onBack = { navController.safePopBackStack() },
++diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/ProviderDetailScreen.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/ProviderDetailScreen.kt
++index 0f31663..b147648 100644
++--- a/src/android/app/src/main/java/com/openminis/app/ui/settings/ProviderDetailScreen.kt
+++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/ProviderDetailScreen.kt
++@@ -88,6 +88,22 @@ fun ProviderDetailScreen(
++     onModelEntryClick: (String) -> Unit = {},
++     onAddCustomModel: () -> Unit = {},
++     onVoiceServiceClick: (String) -> Unit = {},
+++    // ── [FORK-HOOK provider-tabs] ────────────────────────────────────────
+++    // The fork splits this screen into two fixed bottom tabs (配置 / 模型,
+++    // kelive-style), so the model list must be renderable from the OTHER tab
+++    // instead of being welded to the bottom of the config page. Both knobs are
+++    // defaulted to the upstream behaviour, so upstream callers — and any new
+++    // call site an upstream update adds — compile and behave unchanged.
+++    //
+++    // Deliberately parameters rather than a rewrite: adding a defaulted
+++    // parameter at the END of the list is the one edit shape git三方合并
+++    // basically never conflicts on. See docs/FORK.md §3 规则 2.
+++    showModelsSection: Boolean = true,
+++    /** Extra content appended after the credential/endpoint sections. */
+++    bottomBar: @Composable (() -> Unit)? = null,
+++    /** Back arrow suppression — the tab host owns navigation when non-null. */
+++    showBackArrow: Boolean = true,
+++    title: String? = null,
++ ) {
++     val config by providerRepository.config.collectAsState()
++     val instance = config.instances.find { it.id == instanceId }
++@@ -122,7 +138,8 @@ fun ProviderDetailScreen(
++     var storedKey by remember(instanceId) { mutableStateOf(providerRepository.loadApiKey(instanceId) ?: "") }
++     var isEditingKey by remember { mutableStateOf(false) }
++     var editKeyValue by remember { mutableStateOf("") }
++-    var keyVisible by remember { mutableStateOf(false) }
+++    // [FORK-MOD apikey-plaintext] No `keyVisible` state: the key is always
+++    // shown in full (see ApiKeyCredentialBlock for the reasoning).
++ 
++     var isEnabled by remember { mutableStateOf(instance.isEnabled) }
++     var customBaseURL by remember { mutableStateOf(instance.customBaseURL ?: "") }
++@@ -137,8 +154,11 @@ fun ProviderDetailScreen(
++     val exportContext = androidx.compose.ui.platform.LocalContext.current
++ 
++     SettingsScaffold(
++-        title = instance.label,
++-        onBack = onBack,
+++        // [FORK-HOOK provider-tabs] title/back are overridable so the tab host
+++        // can own the top bar; defaults reproduce upstream exactly.
+++        title = title ?: instance.label,
+++        onBack = if (showBackArrow) onBack else null,
+++        bottomBar = bottomBar,
++         actions = {
++             IconButton(onClick = {
++                 AppLogger.info(TAG, "Export instance ${instance.id} (${instance.label})")
++@@ -193,8 +213,6 @@ fun ProviderDetailScreen(
++                 } else {
++                     ApiKeyCredentialBlock(
++                         storedKey = storedKey,
++-                        keyVisible = keyVisible,
++-                        onToggleVisibility = { keyVisible = !keyVisible },
++                         isEditing = isEditingKey,
++                         editValue = editKeyValue,
++                         onEditValueChange = { editKeyValue = it },
++@@ -205,7 +223,6 @@ fun ProviderDetailScreen(
++                         onCancelEdit = {
++                             isEditingKey = false
++                             editKeyValue = ""
++-                            keyVisible = false
++                         },
++                         onSave = {
++                             providerRepository.saveApiKey(instanceId, editKeyValue)
++@@ -216,7 +233,6 @@ fun ProviderDetailScreen(
++                             AppLogger.info(TAG, "Saved API key for ${instance.id}")
++                             isEditingKey = false
++                             editKeyValue = ""
++-                            keyVisible = false
++                         },
++                     )
++                 }
++@@ -525,6 +541,10 @@ fun ProviderDetailScreen(
++         ThinkingRulesSection(instance = instance, providerRepository = providerRepository)
++ 
++         // ─── Models ─────────────────────────────────────────────────
+++        // [FORK-HOOK provider-tabs] Gated: in the fork the model list lives in
+++        // the "模型" tab (ProviderModelsScreen), not appended to the config
+++        // page. Default true = upstream layout.
+++        if (showModelsSection) {
++         SettingsSection(
++             header = stringResource(R.string.provider_detail_models_count_header, entries.size),
++         ) {
++@@ -718,6 +738,7 @@ fun ProviderDetailScreen(
++         ) {
++             Text(stringResource(R.string.provider_detail_add_custom_model))
++         }
+++        } // [FORK-HOOK provider-tabs] end if (showModelsSection)
++ 
++         // [T-android-delete-provider-button-height] The "Delete provider" button
++         // uses the same default 48dp MinisButtonHeight as "Add custom model"
++@@ -924,8 +945,6 @@ private fun OAuthCredentialBlock(
++ @Composable
++ private fun ApiKeyCredentialBlock(
++     storedKey: String,
++-    keyVisible: Boolean,
++-    onToggleVisibility: () -> Unit,
++     isEditing: Boolean,
++     editValue: String,
++     onEditValueChange: (String) -> Unit,
++@@ -933,31 +952,48 @@ private fun ApiKeyCredentialBlock(
++     onCancelEdit: () -> Unit,
++     onSave: () -> Unit,
++ ) {
+++    // [FORK-MOD apikey-plaintext] The key is shown IN FULL, wrapped over as
+++    // many lines as it needs, in both the display and the edit state.
+++    //
+++    // Upstream masked it (maskedKey → "sk-abc...7f9d") behind an eye toggle. On
+++    // a phone that is a net loss: the value being hidden is one the user just
+++    // pasted from a provider console and routinely has to eyeball against it
+++    // ("did the paste truncate?", "is this the relay key or the official
+++    // one?"), and PasswordVisualTransformation on a single-line field made even
+++    // the unmasked state a horizontally-scrolling one-liner nobody can read.
+++    // The threat model does not justify it either — this is a per-app settings
+++    // page behind the device lock, not a shared screen.
+++    //
+++    // singleLine = false + no VisualTransformation is what makes it wrap; the
+++    // monospace style keeps character boundaries legible for comparison.
+++    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+++    val context = androidx.compose.ui.platform.LocalContext.current
+++    val copiedToast = stringResource(R.string.provider_detail_key_copied)
+++
+++    fun copyToClipboard(value: String) {
+++        if (value.isEmpty()) return
+++        clipboard.setText(androidx.compose.ui.text.AnnotatedString(value))
+++        android.widget.Toast.makeText(context, copiedToast, android.widget.Toast.LENGTH_SHORT).show()
+++    }
+++
++     if (isEditing) {
++         SectionTextField(
++             value = editValue,
++             onValueChange = onEditValueChange,
++-            singleLine = true,
++-            visualTransformation = if (keyVisible) {
++-                VisualTransformation.None
++-            } else {
++-                PasswordVisualTransformation()
++-            },
++-            trailingIcon = {
++-                IconButton(onClick = onToggleVisibility) {
++-                    Icon(
++-                        if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
++-                        contentDescription = if (keyVisible) "Hide" else "Show",
++-                    )
++-                }
++-            },
+++            singleLine = false,
+++            textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
++             fieldModifier = Modifier.bringIntoViewOnFocus(),
++         )
++-        Row(modifier = Modifier.padding(top = 8.dp)) {
++-            // [T-android-settings-ui-md3] #4 + #12 Cancel is the SECONDARY action:
++-            // a neutral outlined pill (onSurfaceVariant content/border), forming
++-            // the standard MD3 outlined-vs-filled pair with the filled Save below.
++-            // Previously a primary-teal text button — indistinguishable from Save.
+++        // [FORK-MOD apikey-plaintext] Button order is fixed: 取消 · 复制 · 保存.
+++        // Copy sits in the MIDDLE, and copies what is currently in the field
+++        // (not the stored value) — while editing, the draft is what the user
+++        // cares about, and copying the pre-edit value would be a silent
+++        // mismatch. Cancel keeps upstream's neutral-outlined treatment, Copy is
+++        // outlined too so the filled Save stays the single primary action.
+++        Row(
+++            modifier = Modifier.padding(top = 8.dp),
+++            verticalAlignment = Alignment.CenterVertically,
+++        ) {
++             MinisSmallOutlinedButton(
++                 onClick = onCancelEdit,
++                 colors = ButtonDefaults.outlinedButtonColors(
++@@ -968,25 +1004,51 @@ private fun ApiKeyCredentialBlock(
++                 Text(stringResource(R.string.common_cancel))
++             }
++             Spacer(modifier = Modifier.width(8.dp))
+++            MinisSmallOutlinedButton(
+++                onClick = { copyToClipboard(editValue) },
+++                enabled = editValue.isNotEmpty(),
+++            ) {
+++                Text(stringResource(R.string.common_copy))
+++            }
+++            Spacer(modifier = Modifier.width(8.dp))
++             MinisSmallButton(onClick = onSave, enabled = editValue.isNotBlank()) {
++                 Text(stringResource(R.string.provider_detail_save_key))
++             }
++         }
++     } else {
++-        Row(verticalAlignment = Alignment.CenterVertically) {
++-            Text(
++-                text = if (keyVisible) storedKey else maskedKey(storedKey),
++-                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
++-                modifier = Modifier.weight(1f),
++-            )
++-            IconButton(onClick = onToggleVisibility) {
++-                Icon(
++-                    if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
++-                    contentDescription = if (keyVisible) "Hide" else "Show",
+++        Column {
+++            // Full key, wrapped. selectable so a long-press still offers the
+++            // system copy affordance in addition to the button below.
+++            androidx.compose.foundation.text.selection.SelectionContainer {
+++                Text(
+++                    text = if (storedKey.isEmpty()) {
+++                        stringResource(R.string.provider_detail_key_not_set)
+++                    } else {
+++                        storedKey
+++                    },
+++                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+++                    color = if (storedKey.isEmpty()) {
+++                        MaterialTheme.colorScheme.onSurfaceVariant
+++                    } else {
+++                        MaterialTheme.colorScheme.onSurface
+++                    },
+++                    modifier = Modifier.fillMaxWidth(),
++                 )
++             }
++-            MinisSmallTextButton(onClick = onBeginEdit) {
++-                Text(stringResource(R.string.common_edit))
+++            Row(
+++                modifier = Modifier.padding(top = 8.dp),
+++                verticalAlignment = Alignment.CenterVertically,
+++            ) {
+++                MinisSmallOutlinedButton(
+++                    onClick = { copyToClipboard(storedKey) },
+++                    enabled = storedKey.isNotEmpty(),
+++                ) {
+++                    Text(stringResource(R.string.common_copy))
+++                }
+++                Spacer(modifier = Modifier.width(8.dp))
+++                MinisSmallButton(onClick = onBeginEdit) {
+++                    Text(stringResource(R.string.common_edit))
+++                }
++             }
++         }
++     }
++diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ForkModelPolicy.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ForkModelPolicy.kt
++new file mode 100644
++index 0000000..6d1d081
++--- /dev/null
+++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ForkModelPolicy.kt
++@@ -0,0 +1,60 @@
+++package com.openminis.app.ui.settings.mods
+++
+++import android.content.Context
+++
+++/**
+++ * [FORK] Per-instance "the user manages this model list by hand" flag.
+++ *
+++ * ## The leak this plugs
+++ *
+++ * The fork removed the automatic full-catalog fetch when a provider is created,
+++ * and added the pick-what-you-want 获取模型 sheet instead. That alone is not
+++ * enough: `ProviderRepository.refreshAllModelsIfNeeded` runs once per calendar
+++ * day from `MinisApp.onCreate` and calls `refreshModels` → `replaceEntries`,
+++ * which REPLACES the instance's list with everything the endpoint returns.
+++ *
+++ * So without this flag, a user who adds a relay fronting 400 models, curates 6
+++ * of them, and reopens the app the next day finds all 400 back. That reads as
+++ * "the app randomly re-added everything" — the worst failure mode, because it
+++ * happens hours later with no visible cause.
+++ *
+++ * Upstream already has a skip for exactly this class of problem
+++ * (`autoRefreshModels` bails when the instance owns custom entries, "so we never
+++ * overwrite hand-edited entries"). This extends the same idea to instances the
+++ * fork created, including ones the user has not curated yet.
+++ *
+++ * ## Why SharedPreferences and not a ProviderInstance field
+++ *
+++ * A field would have to be threaded through `ProviderConfig`, the Room entity,
+++ * `ProviderConfigMapping`, a schema version bump and a migration — a large,
+++ * permanently-conflicting diff across the files upstream edits most, for one
+++ * boolean. A separate prefs file is invisible to upstream, needs no migration,
+++ * and degrades correctly: an instance with no entry here (restored from a
+++ * backup, imported from iOS, or created by an older build) behaves exactly as
+++ * upstream does.
+++ */
+++object ForkModelPolicy {
+++
+++    private const val PREFS = "fork_model_policy"
+++    private const val KEY_PREFIX = "manual_"
+++
+++    private fun prefs(context: Context) =
+++        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+++
+++    /**
+++     * True when this instance's model list is user-curated and must not be
+++     * replaced by a background refresh.
+++     */
+++    fun isManual(context: Context, instanceId: String): Boolean =
+++        prefs(context).getBoolean(KEY_PREFIX + instanceId, false)
+++
+++    /** Called when the fork creates a provider through AddProviderScreen. */
+++    fun markManual(context: Context, instanceId: String) {
+++        prefs(context).edit().putBoolean(KEY_PREFIX + instanceId, true).apply()
+++    }
+++
+++    /** Opt back into upstream's automatic daily refresh for this instance. */
+++    fun clearManual(context: Context, instanceId: String) {
+++        prefs(context).edit().remove(KEY_PREFIX + instanceId).apply()
+++    }
+++}
++diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderCatalogFetcher.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderCatalogFetcher.kt
++new file mode 100644
++index 0000000..1fc7ef8
++--- /dev/null
+++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderCatalogFetcher.kt
++@@ -0,0 +1,220 @@
+++package com.openminis.app.ui.settings.mods
+++
+++import com.openminis.app.data.model.LLMModel
+++import com.openminis.app.data.model.ProviderCredential
+++import com.openminis.app.data.model.ProviderInstance
+++import com.openminis.app.data.model.ProviderType
+++import com.openminis.app.data.repository.ProviderRepository
+++import com.openminis.app.logging.AppLogger
+++import com.openminis.app.provider.ModelsDevApi
+++import com.openminis.app.provider.anthropic.AnthropicModelsApi
+++import com.openminis.app.provider.gemini.GeminiModelsApi
+++import com.openminis.app.provider.openai.OpenAIModelsApi
+++import com.openminis.app.provider.openrouter.OpenRouterModelsApi
+++import kotlinx.coroutines.Dispatchers
+++import kotlinx.coroutines.withContext
+++
+++/**
+++ * [FORK] Read-only catalog probe for the "获取模型" flow.
+++ *
+++ * ## Why this exists rather than calling ProviderRepository.refreshModels
+++ *
+++ * `refreshModels` is a WRITE: it fetches and then calls `replaceEntries`,
+++ * which swaps the instance's whole entry list for whatever the endpoint
+++ * returned. That is the upstream "一键加载全部模型" behaviour this fork is
+++ * replacing — a relay that fronts 400 models leaves the picker unusable, and
+++ * the user never got a say.
+++ *
+++ * So the fetch is split from the commit:
+++ *
+++ *   1. [fetchCatalog] — pure read. Hits the same per-provider ModelsApi
+++ *      objects `refreshModels` uses (identical auth, base-URL and UA handling,
+++ *      so a relay that works there works here), returns the list, writes
+++ *      nothing.
+++ *   2. The user ticks what they want in ProviderModelsFetchSheet.
+++ *   3. [addSelected] — commits ONLY those, via `ProviderRepository.addEntry`,
+++ *      which is additive and dedupes on `baseModel.id`. Existing entries,
+++ *      their overrides, hidden flags and group memberships are untouched.
+++ *
+++ * The upstream refresh path is left completely intact — this is additive. If
+++ * an upstream update changes how models are fetched, the only thing that can
+++ * break here is a signature in [fetchCatalog]'s `when`, which fails at COMPILE
+++ * time rather than silently drifting. See docs/FORK.md §3.
+++ */
+++object ProviderCatalogFetcher {
+++
+++    private const val TAG = "ForkCatalogFetcher"
+++
+++    sealed class FetchResult {
+++        data class Success(val models: List<LLMModel>) : FetchResult()
+++        data class Failure(val message: String) : FetchResult()
+++    }
+++
+++    /**
+++     * Fetch the provider's model catalog WITHOUT touching persisted state.
+++     *
+++     * `forceRefresh = true` and `context = null` on every call: the disk cache
+++     * exists to keep app start off the network, but a user who explicitly
+++     * pressed 获取模型 wants the live list — serving them a 7-day-old cache is
+++     * how "my new model doesn't show up" bugs happen.
+++     */
+++    suspend fun fetchCatalog(
+++        instance: ProviderInstance,
+++        providerRepository: ProviderRepository,
+++    ): FetchResult = withContext(Dispatchers.IO) {
+++        // Same credential resolution as refreshModels: usableApiKey substitutes
+++        // "" for the legitimately keyless case (local relay + custom base URL),
+++        // and returns null when a key is genuinely required.
+++        val apiKey = providerRepository.usableApiKey(instance)
+++        val baseURL = instance.effectiveBaseURL
+++
+++        // Codex OAuth cannot call /v1/models — upstream ships a static list for
+++        // exactly this path, so reuse it instead of failing.
+++        if (instance.providerType == ProviderType.openAI &&
+++            instance.credentialType == ProviderCredential.oauth &&
+++            instance.customBaseURL.isNullOrBlank()
+++        ) {
+++            val models = OpenAIModelsApi.fetchModelsOAuth()
+++            return@withContext if (models.isEmpty()) {
+++                FetchResult.Failure("Codex OAuth catalog unavailable")
+++            } else {
+++                FetchResult.Success(models)
+++            }
+++        }
+++
+++        if (apiKey == null) {
+++            return@withContext FetchResult.Failure(
+++                "No credential for this provider. Add an API key (or sign in) first.",
+++            )
+++        }
+++
+++        val models = try {
+++            when (instance.providerType) {
+++                ProviderType.anthropic -> AnthropicModelsApi.fetchModels(
+++                    apiKey,
+++                    baseURL,
+++                    isOAuth = instance.credentialType == ProviderCredential.oauth,
+++                    forceRefresh = true,
+++                    customUserAgent = instance.customUserAgent,
+++                )
+++                ProviderType.gemini -> GeminiModelsApi.fetchModels(
+++                    apiKey,
+++                    isOAuth = instance.credentialType == ProviderCredential.oauth,
+++                    forceRefresh = true,
+++                )
+++                ProviderType.openAI, ProviderType.openAIResponses ->
+++                    OpenAIModelsApi.fetchModels(
+++                        apiKey,
+++                        baseURL,
+++                        forceRefresh = true,
+++                        customUserAgent = instance.customUserAgent,
+++                    )
+++                ProviderType.openRouter -> OpenRouterModelsApi.fetchModels(
+++                    apiKey,
+++                    forceRefresh = true,
+++                )
+++                // xAI / Kimi speak the OpenAI shape. The `?:` default is
+++                // load-bearing, not cosmetic: an instance added through the
+++                // OAuth button carries no customBaseURL, so effectiveBaseURL is
+++                // null and OpenAIModelsApi would resolve api.openai.com —
+++                // sending an xAI token to OpenAI and listing GPT models under a
+++                // Grok provider. Same trap upstream documents in refreshModels.
+++                ProviderType.xAI -> OpenAIModelsApi.fetchModels(
+++                    apiKey,
+++                    baseURL ?: "https://api.x.ai/v1",
+++                    forceRefresh = true,
+++                    customUserAgent = instance.customUserAgent,
+++                ).ifEmpty { com.openminis.app.provider.xai.XAIModelsApi.fetchModelsOAuth() }
+++                ProviderType.kimiCode -> OpenAIModelsApi.fetchModels(
+++                    apiKey,
+++                    baseURL ?: "${com.openminis.app.auth.KimiDeviceFlow.CODING_API_BASE}/v1",
+++                    forceRefresh = true,
+++                    customUserAgent = instance.customUserAgent,
+++                )
+++                ProviderType.antigravity, ProviderType.unsupported -> emptyList()
+++            }
+++        } catch (e: Exception) {
+++            AppLogger.warning(TAG, "fetchCatalog failed for ${instance.id}: ${e.message}")
+++            return@withContext FetchResult.Failure(e.message ?: "network error")
+++        }
+++
+++        if (models.isNotEmpty()) {
+++            AppLogger.info(TAG, "fetchCatalog: ${models.size} models for ${instance.label}")
+++            return@withContext FetchResult.Success(models)
+++        }
+++
+++        // Fall back to the models.dev registry by base URL, exactly as
+++        // refreshModels does — it covers many OpenAI-/Anthropic-compatible
+++        // gateways by hostname and costs nothing when there's no match.
+++        val fallback = ModelsDevApi.fetchModels(
+++            baseURL ?: when (instance.providerType) {
+++                ProviderType.anthropic -> "https://api.anthropic.com/v1"
+++                ProviderType.gemini -> "https://generativelanguage.googleapis.com"
+++                ProviderType.openRouter -> "https://openrouter.ai/api/v1"
+++                ProviderType.xAI -> "https://api.x.ai/v1"
+++                else -> "https://api.openai.com/v1"
+++            },
+++        )
+++        if (fallback.isNotEmpty()) {
+++            AppLogger.info(TAG, "fetchCatalog: models.dev fallback ${fallback.size} for ${instance.label}")
+++            FetchResult.Success(fallback)
+++        } else {
+++            FetchResult.Failure("The endpoint returned no models.")
+++        }
+++    }
+++
+++    /**
+++     * Commit the user's picks. Additive: [ProviderRepository.addEntry] skips an
+++     * entry whose `baseModel.id` already exists on this instance, so re-adding
+++     * is a no-op rather than a duplicate, and nothing already present is
+++     * removed or reset.
+++     *
+++     * ## Why `isCustom = true` on models that came from the provider's catalog
+++     *
+++     * It looks wrong — these are not hand-typed models — but it is precisely
+++     * what protects the curation the user just performed, using upstream's own
+++     * mechanism rather than new state:
+++     *
+++     *  - `ProviderRepository.autoRefreshModels` SKIPS any instance that owns at
+++     *    least one custom entry ("so we never overwrite hand-edited entries").
+++     *    Without the flag, the daily `refreshAllModelsIfNeeded` sweep would call
+++     *    `refreshModels` → `replaceEntries` and swap the user's 5 picked models
+++     *    for the endpoint's full 400 — silently undoing the whole point of this
+++     *    feature, roughly 24 hours later. That failure mode is the worst kind:
+++     *    it looks like the app "randomly re-added everything".
+++     *  - `replaceEntries` also carries custom entries forward explicitly
+++     *    (`remainingCustom`), so even a refresh triggered from somewhere else
+++     *    cannot drop them.
+++     *
+++     * The cost is that models.dev metadata for these entries is frozen at fetch
+++     * time instead of being re-enriched daily. Acceptable: `fetchCatalog` already
+++     * ran the models.dev enrichment (it goes through the same ModelsApi objects),
+++     * and the user can re-fetch at any time. Losing curation is a real bug;
+++     * slightly stale context-window metadata is not.
+++     *
+++     * Returns how many entries were actually new.
+++     */
+++    fun addSelected(
+++        instanceId: String,
+++        models: List<LLMModel>,
+++        providerRepository: ProviderRepository,
+++    ): Int {
+++        val existing = providerRepository.entriesFor(instanceId)
+++            .map { it.baseModel.id }
+++            .toSet()
+++        var added = 0
+++        for (model in models) {
+++            if (model.id in existing) continue
+++            providerRepository.addEntry(
+++                com.openminis.app.data.model.ModelEntry(
+++                    providerInstanceId = instanceId,
+++                    baseModel = model,
+++                    isCustom = true,
+++                ),
+++            )
+++            added++
+++        }
+++        AppLogger.info(TAG, "addSelected: $added new of ${models.size} picked for $instanceId")
+++        return added
+++    }
+++}
++diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsFetchSheet.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsFetchSheet.kt
++new file mode 100644
++index 0000000..bcaddc9
++--- /dev/null
+++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsFetchSheet.kt
++@@ -0,0 +1,374 @@
+++package com.openminis.app.ui.settings.mods
+++
+++import androidx.compose.foundation.clickable
+++import androidx.compose.foundation.layout.Arrangement
+++import androidx.compose.foundation.layout.Box
+++import androidx.compose.foundation.layout.Column
+++import androidx.compose.foundation.layout.Row
+++import androidx.compose.foundation.layout.Spacer
+++import androidx.compose.foundation.layout.fillMaxHeight
+++import androidx.compose.foundation.layout.fillMaxWidth
+++import androidx.compose.foundation.layout.height
+++import androidx.compose.foundation.layout.heightIn
+++import androidx.compose.foundation.layout.navigationBarsPadding
+++import androidx.compose.foundation.layout.padding
+++import androidx.compose.foundation.layout.size
+++import androidx.compose.foundation.layout.width
+++import androidx.compose.foundation.lazy.LazyColumn
+++import androidx.compose.foundation.lazy.items
+++import androidx.compose.foundation.shape.RoundedCornerShape
+++import androidx.compose.material.icons.Icons
+++import androidx.compose.material.icons.filled.CheckCircle
+++import androidx.compose.material.icons.filled.Close
+++import androidx.compose.material.icons.filled.RadioButtonUnchecked
+++import androidx.compose.material.icons.filled.Search
+++import androidx.compose.material3.CircularProgressIndicator
+++import androidx.compose.material3.ExperimentalMaterial3Api
+++import androidx.compose.material3.HorizontalDivider
+++import androidx.compose.material3.Icon
+++import androidx.compose.material3.IconButton
+++import androidx.compose.material3.MaterialTheme
+++import androidx.compose.material3.ModalBottomSheet
+++import androidx.compose.material3.OutlinedTextField
+++import androidx.compose.material3.Text
+++import androidx.compose.material3.rememberModalBottomSheetState
+++import androidx.compose.runtime.Composable
+++import androidx.compose.runtime.LaunchedEffect
+++import androidx.compose.runtime.getValue
+++import androidx.compose.runtime.mutableStateOf
+++import androidx.compose.runtime.remember
+++import androidx.compose.runtime.rememberCoroutineScope
+++import androidx.compose.runtime.setValue
+++import androidx.compose.ui.Alignment
+++import androidx.compose.ui.Modifier
+++import androidx.compose.ui.res.stringResource
+++import androidx.compose.ui.text.font.FontFamily
+++import androidx.compose.ui.text.font.FontWeight
+++import androidx.compose.ui.unit.dp
+++import com.openminis.app.R
+++import com.openminis.app.data.model.LLMModel
+++import com.openminis.app.data.model.ProviderInstance
+++import com.openminis.app.data.repository.ProviderRepository
+++import com.openminis.app.ui.components.MinisButton
+++import com.openminis.app.ui.components.MinisSmallTextButton
+++import kotlinx.coroutines.launch
+++
+++/**
+++ * [FORK] The 获取模型 sheet — fetch the provider catalog, tick what you want,
+++ * confirm.
+++ *
+++ * The whole reason this exists: upstream's model refresh is fetch-and-replace
+++ * with no选择环节. Here the fetch writes NOTHING (see
+++ * [ProviderCatalogFetcher.fetchCatalog]); the only write happens when the user
+++ * presses 添加, and it is additive.
+++ *
+++ * Models already on the instance render as "已添加" and are non-selectable — the
+++ * alternative (silently pre-ticking them) would make the confirm button's count
+++ * a lie about what is about to change.
+++ */
+++@OptIn(ExperimentalMaterial3Api::class)
+++@Composable
+++fun ProviderModelsFetchSheet(
+++    instance: ProviderInstance,
+++    providerRepository: ProviderRepository,
+++    onDismiss: () -> Unit,
+++) {
+++    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+++    val scope = rememberCoroutineScope()
+++    val context = androidx.compose.ui.platform.LocalContext.current
+++
+++    var isLoading by remember { mutableStateOf(true) }
+++    var errorMessage by remember { mutableStateOf<String?>(null) }
+++    var catalog by remember { mutableStateOf<List<LLMModel>>(emptyList()) }
+++    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+++    var searchQuery by remember { mutableStateOf("") }
+++    var reloadTick by remember { mutableStateOf(0) }
+++
+++    val existingIds = remember(instance.id, catalog) {
+++        providerRepository.entriesFor(instance.id).map { it.baseModel.id }.toSet()
+++    }
+++
+++    LaunchedEffect(instance.id, reloadTick) {
+++        isLoading = true
+++        errorMessage = null
+++        when (val result = ProviderCatalogFetcher.fetchCatalog(instance, providerRepository)) {
+++            is ProviderCatalogFetcher.FetchResult.Success -> {
+++                catalog = result.models
+++                errorMessage = null
+++            }
+++            is ProviderCatalogFetcher.FetchResult.Failure -> {
+++                catalog = emptyList()
+++                errorMessage = result.message
+++            }
+++        }
+++        isLoading = false
+++    }
+++
+++    val q = searchQuery.trim().lowercase()
+++    val filtered = if (q.isEmpty()) {
+++        catalog
+++    } else {
+++        catalog.filter {
+++            it.displayName.lowercase().contains(q) || it.id.lowercase().contains(q)
+++        }
+++    }
+++    // Only rows the user can actually act on count towards 全选.
+++    val selectableIds = filtered.filter { it.id !in existingIds }.map { it.id }
+++
+++    ModalBottomSheet(
+++        onDismissRequest = onDismiss,
+++        sheetState = sheetState,
+++    ) {
+++        Column(
+++            modifier = Modifier
+++                .fillMaxWidth()
+++                .fillMaxHeight(0.9f),
+++        ) {
+++            // ── Header ──────────────────────────────────────────────────
+++            Row(
+++                modifier = Modifier
+++                    .fillMaxWidth()
+++                    .padding(horizontal = 20.dp)
+++                    .padding(bottom = 4.dp),
+++                verticalAlignment = Alignment.CenterVertically,
+++            ) {
+++                Column(modifier = Modifier.weight(1f)) {
+++                    Text(
+++                        stringResource(R.string.fork_fetch_title),
+++                        style = MaterialTheme.typography.titleMedium,
+++                        fontWeight = FontWeight.SemiBold,
+++                    )
+++                    Text(
+++                        if (isLoading || errorMessage != null) {
+++                            stringResource(R.string.fork_fetch_subtitle)
+++                        } else {
+++                            stringResource(R.string.fork_fetch_found, catalog.size)
+++                        },
+++                        style = MaterialTheme.typography.bodySmall,
+++                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+++                    )
+++                }
+++                if (selectableIds.isNotEmpty()) {
+++                    MinisSmallTextButton(
+++                        onClick = {
+++                            selected = if (selectableIds.all { it in selected }) {
+++                                selected - selectableIds.toSet()
+++                            } else {
+++                                selected + selectableIds
+++                            }
+++                        },
+++                    ) {
+++                        Text(
+++                            if (selectableIds.all { it in selected }) {
+++                                stringResource(R.string.fork_fetch_clear_selection)
+++                            } else {
+++                                stringResource(R.string.fork_fetch_select_all)
+++                            },
+++                        )
+++                    }
+++                }
+++            }
+++
+++            // ── Search ──────────────────────────────────────────────────
+++            if (catalog.size >= 6) {
+++                OutlinedTextField(
+++                    value = searchQuery,
+++                    onValueChange = { searchQuery = it },
+++                    placeholder = { Text(stringResource(R.string.fork_models_search_placeholder)) },
+++                    singleLine = true,
+++                    shape = RoundedCornerShape(50),
+++                    modifier = Modifier
+++                        .fillMaxWidth()
+++                        .padding(horizontal = 20.dp, vertical = 8.dp),
+++                    leadingIcon = {
+++                        Icon(
+++                            Icons.Default.Search,
+++                            contentDescription = null,
+++                            modifier = Modifier.size(18.dp),
+++                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+++                        )
+++                    },
+++                    trailingIcon = {
+++                        if (searchQuery.isNotEmpty()) {
+++                            IconButton(onClick = { searchQuery = "" }) {
+++                                Icon(
+++                                    Icons.Default.Close,
+++                                    contentDescription = stringResource(R.string.fork_models_clear_search),
+++                                    modifier = Modifier.size(18.dp),
+++                                )
+++                            }
+++                        }
+++                    },
+++                )
+++            }
+++
+++            // ── Body ────────────────────────────────────────────────────
+++            Box(modifier = Modifier.weight(1f)) {
+++                when {
+++                    isLoading -> Column(
+++                        modifier = Modifier.fillMaxWidth().padding(32.dp),
+++                        horizontalAlignment = Alignment.CenterHorizontally,
+++                        verticalArrangement = Arrangement.spacedBy(12.dp),
+++                    ) {
+++                        CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+++                        Text(
+++                            stringResource(R.string.fork_fetch_loading),
+++                            style = MaterialTheme.typography.bodyMedium,
+++                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+++                        )
+++                    }
+++
+++                    errorMessage != null -> Column(
+++                        modifier = Modifier.fillMaxWidth().padding(24.dp),
+++                        horizontalAlignment = Alignment.CenterHorizontally,
+++                        verticalArrangement = Arrangement.spacedBy(12.dp),
+++                    ) {
+++                        Text(
+++                            stringResource(R.string.fork_fetch_failed, errorMessage!!),
+++                            style = MaterialTheme.typography.bodyMedium,
+++                            color = MaterialTheme.colorScheme.error,
+++                        )
+++                        MinisButton(onClick = { reloadTick++ }) {
+++                            Text(stringResource(R.string.fork_fetch_retry))
+++                        }
+++                    }
+++
+++                    catalog.isEmpty() -> Text(
+++                        stringResource(R.string.fork_fetch_empty),
+++                        style = MaterialTheme.typography.bodyMedium,
+++                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+++                        modifier = Modifier.padding(24.dp),
+++                    )
+++
+++                    else -> LazyColumn(modifier = Modifier.fillMaxWidth()) {
+++                        items(filtered, key = { it.id }) { model ->
+++                            val alreadyAdded = model.id in existingIds
+++                            val isSelected = model.id in selected
+++                            Column(
+++                                modifier = Modifier
+++                                    .fillMaxWidth()
+++                                    .then(
+++                                        if (alreadyAdded) {
+++                                            Modifier
+++                                        } else {
+++                                            Modifier.clickable {
+++                                                selected = if (isSelected) {
+++                                                    selected - model.id
+++                                                } else {
+++                                                    selected + model.id
+++                                                }
+++                                            }
+++                                        },
+++                                    )
+++                                    .heightIn(min = 68.dp)
+++                                    .padding(horizontal = 20.dp, vertical = 10.dp),
+++                                verticalArrangement = Arrangement.spacedBy(3.dp),
+++                            ) {
+++                                Row(verticalAlignment = Alignment.CenterVertically) {
+++                                    if (alreadyAdded) {
+++                                        Icon(
+++                                            Icons.Default.CheckCircle,
+++                                            contentDescription = null,
+++                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+++                                                .copy(alpha = 0.4f),
+++                                            modifier = Modifier.size(20.dp),
+++                                        )
+++                                    } else {
+++                                        Icon(
+++                                            if (isSelected) Icons.Default.CheckCircle
+++                                            else Icons.Default.RadioButtonUnchecked,
+++                                            contentDescription = null,
+++                                            tint = if (isSelected) {
+++                                                MaterialTheme.colorScheme.primary
+++                                            } else {
+++                                                MaterialTheme.colorScheme.onSurfaceVariant
+++                                                    .copy(alpha = 0.4f)
+++                                            },
+++                                            modifier = Modifier.size(20.dp),
+++                                        )
+++                                    }
+++                                    Spacer(Modifier.width(10.dp))
+++                                    Column(modifier = Modifier.weight(1f)) {
+++                                        Text(
+++                                            model.displayName,
+++                                            style = MaterialTheme.typography.bodyLarge,
+++                                            fontWeight = FontWeight.Medium,
+++                                            color = if (alreadyAdded) {
+++                                                MaterialTheme.colorScheme.onSurfaceVariant
+++                                            } else {
+++                                                MaterialTheme.colorScheme.onSurface
+++                                            },
+++                                        )
+++                                        Text(
+++                                            model.id,
+++                                            style = MaterialTheme.typography.bodySmall.copy(
+++                                                fontFamily = FontFamily.Monospace,
+++                                            ),
+++                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+++                                        )
+++                                    }
+++                                    if (alreadyAdded) {
+++                                        Text(
+++                                            stringResource(R.string.fork_fetch_already_added),
+++                                            style = MaterialTheme.typography.labelSmall,
+++                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+++                                        )
+++                                    }
+++                                }
+++                                Row(modifier = Modifier.padding(start = 30.dp)) {
+++                                    ForkModelCapabilityRow(model)
+++                                }
+++                            }
+++                            HorizontalDivider(
+++                                modifier = Modifier.padding(horizontal = 20.dp),
+++                                thickness = 0.5.dp,
+++                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+++                            )
+++                        }
+++                    }
+++                }
+++            }
+++
+++            // ── Confirm ─────────────────────────────────────────────────
+++            if (!isLoading && errorMessage == null && catalog.isNotEmpty()) {
+++                MinisButton(
+++                    onClick = {
+++                        val picks = catalog.filter { it.id in selected }
+++                        val added = ProviderCatalogFetcher.addSelected(
+++                            instance.id,
+++                            picks,
+++                            providerRepository,
+++                        )
+++                        // getString on the Context, not a pre-resolved
+++                        // stringResource: the count is only known here, and
+++                        // patching a formatted string after the fact would
+++                        // corrupt any translation whose text contains the same
+++                        // digits.
+++                        android.widget.Toast.makeText(
+++                            context,
+++                            context.getString(R.string.fork_fetch_added_toast, added),
+++                            android.widget.Toast.LENGTH_SHORT,
+++                        ).show()
+++                        scope.launch { sheetState.hide() }
+++                        onDismiss()
+++                    },
+++                    enabled = selected.isNotEmpty(),
+++                    modifier = Modifier
+++                        .fillMaxWidth()
+++                        .padding(horizontal = 20.dp, vertical = 12.dp)
+++                        .navigationBarsPadding(),
+++                ) {
+++                    Text(
+++                        if (selected.isEmpty()) {
+++                            stringResource(R.string.fork_fetch_add_none)
+++                        } else {
+++                            stringResource(R.string.fork_fetch_add_selected, selected.size)
+++                        },
+++                    )
+++                }
+++            } else {
+++                Spacer(Modifier.height(12.dp).navigationBarsPadding())
+++            }
+++        }
+++    }
+++}
++diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsTab.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsTab.kt
++new file mode 100644
++index 0000000..6bc41fa
++--- /dev/null
+++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/mods/ProviderModelsTab.kt
++@@ -0,0 +1,332 @@
+++package com.openminis.app.ui.settings.mods
+++
+++import androidx.compose.foundation.ExperimentalFoundationApi
+++import androidx.compose.foundation.combinedClickable
+++import androidx.compose.foundation.layout.Arrangement
+++import androidx.compose.foundation.layout.Box
+++import androidx.compose.foundation.layout.Column
+++import androidx.compose.foundation.layout.Row
+++import androidx.compose.foundation.layout.Spacer
+++import androidx.compose.foundation.layout.fillMaxWidth
+++import androidx.compose.foundation.layout.height
+++import androidx.compose.foundation.layout.heightIn
+++import androidx.compose.foundation.layout.padding
+++import androidx.compose.foundation.layout.size
+++import androidx.compose.foundation.layout.width
+++import androidx.compose.foundation.shape.RoundedCornerShape
+++import androidx.compose.material.icons.Icons
+++import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+++import androidx.compose.material.icons.filled.Add
+++import androidx.compose.material.icons.filled.CloudDownload
+++import androidx.compose.material.icons.filled.Close
+++import androidx.compose.material.icons.filled.Delete
+++import androidx.compose.material.icons.filled.Search
+++import androidx.compose.material.icons.filled.Visibility
+++import androidx.compose.material.icons.filled.VisibilityOff
+++import androidx.compose.material3.DropdownMenu
+++import androidx.compose.material3.DropdownMenuItem
+++import androidx.compose.material3.ExperimentalMaterial3Api
+++import androidx.compose.material3.HorizontalDivider
+++import androidx.compose.material3.Icon
+++import androidx.compose.material3.IconButton
+++import androidx.compose.material3.MaterialTheme
+++import androidx.compose.material3.OutlinedTextField
+++import androidx.compose.material3.Text
+++import androidx.compose.runtime.Composable
+++import androidx.compose.runtime.collectAsState
+++import androidx.compose.runtime.getValue
+++import androidx.compose.runtime.mutableStateOf
+++import androidx.compose.runtime.remember
+++import androidx.compose.runtime.setValue
+++import androidx.compose.ui.Alignment
+++import androidx.compose.ui.Modifier
+++import androidx.compose.ui.draw.alpha
+++import androidx.compose.ui.res.stringResource
+++import androidx.compose.ui.text.font.FontFamily
+++import androidx.compose.ui.text.font.FontWeight
+++import androidx.compose.ui.unit.dp
+++import com.openminis.app.R
+++import com.openminis.app.data.model.ModelEntry
+++import com.openminis.app.data.repository.ProviderRepository
+++import com.openminis.app.logging.AppLogger
+++import com.openminis.app.ui.components.MinisAlertDialog
+++import com.openminis.app.ui.components.MinisOutlinedButton
+++import com.openminis.app.ui.settings.SettingsSection
+++
+++/**
+++ * [FORK] The "模型" tab of the provider screen — kelive-style.
+++ *
+++ * Differences from upstream's model section, which this replaces:
+++ *
+++ *  - No one-tap "refresh everything". Upstream's `Refresh model list` row calls
+++ *    `refreshModels`, which REPLACES the instance's entry list with whatever the
+++ *    endpoint returns. Point a provider at a relay fronting 400 models and the
+++ *    picker becomes unusable, with no way to opt out. Here 获取模型 opens a
+++ *    sheet, you tick what you want, and only those are added
+++ *    ([ProviderCatalogFetcher]).
+++ *  - Search, because a list you curate is still a list you have to find things
+++ *    in.
+++ *  - Per-row hide / delete stays available (long-press), same semantics as
+++ *    upstream: built-in entries can be hidden but not deleted, since the repo
+++ *    re-creates them from `ProviderType.builtInModels` on the next refresh.
+++ *
+++ * Rendered as the CONTENT of the shared tabbed scaffold, so the top bar and the
+++ * bottom 配置/模型 bar are owned by [ProviderDetailTabbedScreen].
+++ */
+++@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+++@Composable
+++fun ProviderModelsTabContent(
+++    instanceId: String,
+++    providerRepository: ProviderRepository,
+++    onModelEntryClick: (String) -> Unit,
+++    onAddCustomModel: () -> Unit,
+++) {
+++    val config by providerRepository.config.collectAsState()
+++    val instance = config.instances.find { it.id == instanceId } ?: return
+++
+++    var searchQuery by remember { mutableStateOf("") }
+++    var showFetchSheet by remember { mutableStateOf(false) }
+++    var menuEntryId by remember { mutableStateOf<String?>(null) }
+++    var entryToDelete by remember { mutableStateOf<ModelEntry?>(null) }
+++
+++    val allEntries = providerRepository.entriesFor(instanceId)
+++    val q = searchQuery.trim().lowercase()
+++    val entries = if (q.isEmpty()) {
+++        allEntries
+++    } else {
+++        allEntries.filter {
+++            it.model.displayName.lowercase().contains(q) || it.model.id.lowercase().contains(q)
+++        }
+++    }
+++
+++    // ── Actions ─────────────────────────────────────────────────────────
+++    Row(
+++        modifier = Modifier
+++            .fillMaxWidth()
+++            .padding(horizontal = 16.dp)
+++            .padding(top = 16.dp),
+++        horizontalArrangement = Arrangement.spacedBy(12.dp),
+++    ) {
+++        MinisOutlinedButton(
+++            onClick = { showFetchSheet = true },
+++            modifier = Modifier.weight(1f),
+++        ) {
+++            Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+++            Spacer(Modifier.width(6.dp))
+++            Text(stringResource(R.string.fork_models_fetch))
+++        }
+++        MinisOutlinedButton(
+++            onClick = onAddCustomModel,
+++            modifier = Modifier.weight(1f),
+++        ) {
+++            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+++            Spacer(Modifier.width(6.dp))
+++            Text(stringResource(R.string.fork_models_add_custom))
+++        }
+++    }
+++
+++    // ── Search ──────────────────────────────────────────────────────────
+++    // Only once the list is big enough to need it; a 3-model provider showing a
+++    // search box is noise.
+++    if (allEntries.size >= 6) {
+++        OutlinedTextField(
+++            value = searchQuery,
+++            onValueChange = { searchQuery = it },
+++            placeholder = { Text(stringResource(R.string.fork_models_search_placeholder)) },
+++            singleLine = true,
+++            shape = RoundedCornerShape(50),
+++            modifier = Modifier
+++                .fillMaxWidth()
+++                .padding(horizontal = 16.dp)
+++                .padding(top = 12.dp),
+++            leadingIcon = {
+++                Icon(
+++                    Icons.Default.Search,
+++                    contentDescription = null,
+++                    modifier = Modifier.size(18.dp),
+++                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+++                )
+++            },
+++            trailingIcon = {
+++                if (searchQuery.isNotEmpty()) {
+++                    IconButton(onClick = { searchQuery = "" }) {
+++                        Icon(
+++                            Icons.Default.Close,
+++                            contentDescription = stringResource(R.string.fork_models_clear_search),
+++                            modifier = Modifier.size(18.dp),
+++                        )
+++                    }
+++                }
+++            },
+++        )
+++    }
+++
+++    // ── List ────────────────────────────────────────────────────────────
+++    val header = if (q.isEmpty()) {
+++        stringResource(R.string.fork_models_count, allEntries.size)
+++    } else {
+++        stringResource(R.string.fork_models_count_filtered, entries.size, allEntries.size)
+++    }
+++
+++    if (allEntries.isEmpty()) {
+++        SettingsSection(header = header) {
+++            Text(
+++                stringResource(R.string.fork_models_empty),
+++                style = MaterialTheme.typography.bodyMedium,
+++                color = MaterialTheme.colorScheme.onSurfaceVariant,
+++                modifier = Modifier.padding(16.dp),
+++            )
+++        }
+++    } else if (entries.isEmpty()) {
+++        SettingsSection(header = header) {
+++            Text(
+++                stringResource(R.string.fork_models_empty_search, searchQuery.trim()),
+++                style = MaterialTheme.typography.bodyMedium,
+++                color = MaterialTheme.colorScheme.onSurfaceVariant,
+++                modifier = Modifier.padding(16.dp),
+++            )
+++        }
+++    } else {
+++        SettingsSection(header = header) {
+++            entries.forEachIndexed { idx, entry ->
+++                Box(modifier = Modifier.fillMaxWidth()) {
+++                    Column(
+++                        modifier = Modifier
+++                            .fillMaxWidth()
+++                            // Hidden entries dim, matching upstream's treatment;
+++                            // alpha is visual only so the row stays tappable to
+++                            // un-hide from the detail screen.
+++                            .then(if (entry.isHidden) Modifier.alpha(0.45f) else Modifier)
+++                            .combinedClickable(
+++                                onClick = { onModelEntryClick(entry.id) },
+++                                onLongClick = { menuEntryId = entry.id },
+++                            )
+++                            .heightIn(min = 72.dp)
+++                            .padding(horizontal = 14.dp, vertical = 10.dp),
+++                        verticalArrangement = Arrangement.spacedBy(4.dp),
+++                    ) {
+++                        Row(verticalAlignment = Alignment.CenterVertically) {
+++                            ForkProviderDot(instance.providerType)
+++                            Spacer(Modifier.width(8.dp))
+++                            Text(
+++                                entry.model.displayName,
+++                                style = MaterialTheme.typography.bodyLarge,
+++                                fontWeight = FontWeight.Medium,
+++                                modifier = Modifier.weight(1f),
+++                            )
+++                            if (entry.isHidden) {
+++                                Text(
+++                                    stringResource(R.string.fork_models_hidden_badge),
+++                                    style = MaterialTheme.typography.labelSmall,
+++                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+++                                )
+++                                Spacer(Modifier.width(4.dp))
+++                            }
+++                            Icon(
+++                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+++                                contentDescription = null,
+++                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+++                                modifier = Modifier.size(20.dp),
+++                            )
+++                        }
+++                        Text(
+++                            entry.model.id,
+++                            style = MaterialTheme.typography.bodySmall.copy(
+++                                fontFamily = FontFamily.Monospace,
+++                            ),
+++                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+++                        )
+++                        ForkModelCapabilityRow(entry.model)
+++                    }
+++
+++                    DropdownMenu(
+++                        expanded = menuEntryId == entry.id,
+++                        onDismissRequest = { menuEntryId = null },
+++                    ) {
+++                        DropdownMenuItem(
+++                            text = {
+++                                Text(
+++                                    stringResource(
+++                                        if (entry.isHidden) R.string.provider_detail_show_model
+++                                        else R.string.provider_detail_hide_model,
+++                                    ),
+++                                )
+++                            },
+++                            leadingIcon = {
+++                                Icon(
+++                                    if (entry.isHidden) Icons.Filled.Visibility
+++                                    else Icons.Filled.VisibilityOff,
+++                                    contentDescription = null,
+++                                )
+++                            },
+++                            onClick = {
+++                                menuEntryId = null
+++                                providerRepository.updateEntry(entry.copy(isHidden = !entry.isHidden))
+++                                AppLogger.info(
+++                                    "ForkModels",
+++                                    "entry ${entry.id} isHidden ${entry.isHidden} -> ${!entry.isHidden}",
+++                                )
+++                            },
+++                        )
+++                        // Only custom entries can be deleted — the repo
+++                        // re-creates built-ins from ProviderType.builtInModels
+++                        // on the next refresh, so "delete" on one would silently
+++                        // undo itself. Hiding is the supported way out.
+++                        if (entry.isCustom) {
+++                            DropdownMenuItem(
+++                                text = {
+++                                    Text(
+++                                        stringResource(R.string.common_delete),
+++                                        color = MaterialTheme.colorScheme.error,
+++                                    )
+++                                },
+++                                leadingIcon = {
+++                                    Icon(
+++                                        Icons.Filled.Delete,
+++                                        contentDescription = null,
+++                                        tint = MaterialTheme.colorScheme.error,
+++                                    )
+++                                },
+++                                onClick = {
+++                                    menuEntryId = null
+++                                    entryToDelete = entry
+++                                },
+++                            )
+++                        }
+++                    }
+++                }
+++                if (idx != entries.lastIndex) {
+++                    HorizontalDivider(
+++                        modifier = Modifier.padding(start = 14.dp, end = 14.dp),
+++                        thickness = 0.5.dp,
+++                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+++                    )
+++                }
+++            }
+++        }
+++    }
+++
+++    Spacer(Modifier.height(24.dp))
+++
+++    if (showFetchSheet) {
+++        ProviderModelsFetchSheet(
+++            instance = instance,
+++            providerRepository = providerRepository,
+++            onDismiss = { showFetchSheet = false },
+++        )
+++    }
+++
+++    entryToDelete?.let { e ->
+++        MinisAlertDialog(
+++            onDismissRequest = { entryToDelete = null },
+++            title = stringResource(R.string.provider_detail_delete_model),
+++            text = stringResource(R.string.provider_detail_delete_model_confirm, e.model.displayName),
+++            confirmText = stringResource(R.string.common_delete),
+++            isDestructive = true,
+++            onConfirm = {
+++                providerRepository.removeEntry(e.id)
+++                entryToDelete = null
+++            },
+++        )
+++    }
+++}
++diff --git a/src/android/app/src/main/res/values-zh/strings_fork.xml b/src/android/app/src/main/res/values-zh/strings_fork.xml
++new file mode 100644
++index 0000000..f6d104d
++--- /dev/null
+++++ b/src/android/app/src/main/res/values-zh/strings_fork.xml
++@@ -0,0 +1,46 @@
+++<?xml version="1.0" encoding="utf-8"?>
+++<!-- FORK-ONLY string resources — 简体中文。见 values/strings_fork.xml 的说明。 -->
+++<resources>
+++    <!-- 服务商详情 — 底部标签 -->
+++    <string name="fork_tab_config">配置</string>
+++    <string name="fork_tab_models">模型</string>
+++
+++    <!-- API Key 区块 -->
+++    <string name="provider_detail_key_copied">已复制到剪贴板</string>
+++    <string name="provider_detail_key_not_set">未设置</string>
+++
+++    <!-- 模型标签页 -->
+++    <string name="fork_models_title">模型</string>
+++    <string name="fork_models_fetch">获取模型</string>
+++    <string name="fork_models_add_custom">手动添加</string>
+++    <string name="fork_models_search_placeholder">搜索模型</string>
+++    <string name="fork_models_clear_search">清除搜索</string>
+++    <string name="fork_models_count">%1$d 个模型</string>
+++    <string name="fork_models_count_filtered">%1$d / %2$d 个模型</string>
+++    <string name="fork_models_empty">还没有模型。点「获取模型」拉取服务商目录并挑选需要的，或手动添加一个。</string>
+++    <string name="fork_models_empty_search">没有匹配「%1$s」的模型。</string>
+++    <string name="fork_models_enabled">已启用</string>
+++    <string name="fork_models_hidden_badge">已隐藏</string>
+++
+++    <!-- 获取模型面板 -->
+++    <string name="fork_fetch_title">获取模型</string>
+++    <string name="fork_fetch_subtitle">勾选要添加的模型，确认后才会写入。</string>
+++    <string name="fork_fetch_loading">正在从服务商获取…</string>
+++    <string name="fork_fetch_retry">重试</string>
+++    <string name="fork_fetch_failed">获取失败：%1$s</string>
+++    <string name="fork_fetch_empty">服务商没有返回任何模型。</string>
+++    <string name="fork_fetch_select_all">全选</string>
+++    <string name="fork_fetch_clear_selection">清空</string>
+++    <string name="fork_fetch_add_selected">添加 %1$d 个</string>
+++    <string name="fork_fetch_add_none">添加</string>
+++    <string name="fork_fetch_already_added">已添加</string>
+++    <string name="fork_fetch_added_toast">已添加 %1$d 个模型</string>
+++    <string name="fork_fetch_found">共 %1$d 个模型</string>
+++
+++    <!-- 能力标签 -->
+++    <string name="fork_chip_chat">聊天</string>
+++    <string name="fork_chip_reasoning">思考</string>
+++
+++    <!-- 添加服务商 -->
+++    <string name="fork_add_provider_ua_footer">部分网关会拒绝默认 User-Agent，只放行官方客户端。除非你的端点有要求，留空即可。</string>
+++</resources>
++diff --git a/src/android/app/src/main/res/values/strings_fork.xml b/src/android/app/src/main/res/values/strings_fork.xml
++new file mode 100644
++index 0000000..b8e9cf0
++--- /dev/null
+++++ b/src/android/app/src/main/res/values/strings_fork.xml
++@@ -0,0 +1,53 @@
+++<?xml version="1.0" encoding="utf-8"?>
+++<!--
+++  FORK-ONLY string resources.
+++
+++  Kept in a SEPARATE file from strings.xml on purpose: Android merges every
+++  values/*.xml at build time, so the fork can add copy without ever touching
+++  the file upstream edits on nearly every release. Zero merge-conflict surface.
+++  See docs/FORK.md §3.
+++-->
+++<resources>
+++    <!-- Provider detail — bottom tabs -->
+++    <string name="fork_tab_config">Config</string>
+++    <string name="fork_tab_models">Models</string>
+++
+++    <!-- API key block -->
+++    <string name="provider_detail_key_copied">Copied to clipboard</string>
+++    <string name="provider_detail_key_not_set">Not set</string>
+++
+++    <!-- Models tab -->
+++    <string name="fork_models_title">Models</string>
+++    <string name="fork_models_fetch">Fetch Models</string>
+++    <string name="fork_models_add_custom">Add Manually</string>
+++    <string name="fork_models_search_placeholder">Search models</string>
+++    <string name="fork_models_clear_search">Clear search</string>
+++    <string name="fork_models_count">%1$d models</string>
+++    <string name="fork_models_count_filtered">%1$d / %2$d models</string>
+++    <string name="fork_models_empty">No models yet. Tap “Fetch Models” to pull the provider catalog and pick the ones you want, or add one manually.</string>
+++    <string name="fork_models_empty_search">No model matches “%1$s”.</string>
+++    <string name="fork_models_enabled">Enabled</string>
+++    <string name="fork_models_hidden_badge">Hidden</string>
+++
+++    <!-- Fetch sheet -->
+++    <string name="fork_fetch_title">Fetch Models</string>
+++    <string name="fork_fetch_subtitle">Pick the models to add. Nothing is added until you confirm.</string>
+++    <string name="fork_fetch_loading">Fetching from provider…</string>
+++    <string name="fork_fetch_retry">Retry</string>
+++    <string name="fork_fetch_failed">Fetch failed: %1$s</string>
+++    <string name="fork_fetch_empty">The provider returned no models.</string>
+++    <string name="fork_fetch_select_all">Select all</string>
+++    <string name="fork_fetch_clear_selection">Clear</string>
+++    <string name="fork_fetch_add_selected">Add %1$d selected</string>
+++    <string name="fork_fetch_add_none">Add</string>
+++    <string name="fork_fetch_already_added">Added</string>
+++    <string name="fork_fetch_added_toast">Added %1$d model(s)</string>
+++    <string name="fork_fetch_found">Found %1$d models</string>
+++
+++    <!-- Capability chips -->
+++    <string name="fork_chip_chat">chat</string>
+++    <string name="fork_chip_reasoning">think</string>
+++
+++    <!-- Add provider -->
+++    <string name="fork_add_provider_ua_footer">Some gateways reject the default User-Agent and only accept official clients. Leave blank unless your endpoint requires a specific one.</string>
+++</resources>
+diff --git a/patches/0004-feat-provider-UA-Key.patch b/patches/0004-feat-provider-UA-Key.patch
+new file mode 100644
+index 0000000..f6e0bed
+--- /dev/null
++++ b/patches/0004-feat-provider-UA-Key.patch
+@@ -0,0 +1,187 @@
++From 1f18dda991dfc91277cc439144284f9eb1e179a9 Mon Sep 17 00:00:00 2001
++From: oh5uosnvh <oh5uosnvh@users.noreply.github.com>
++Date: Fri, 4 Sep 2026 10:28:48 +0800
++Subject: [PATCH 4/4] =?UTF-8?q?feat(provider):=20=E6=B7=BB=E5=8A=A0?=
++ =?UTF-8?q?=E6=9C=8D=E5=8A=A1=E5=95=86=E6=97=B6=E5=8D=B3=E5=8F=AF=E5=A1=AB?=
++ =?UTF-8?q?=20UA=EF=BC=8CKey=20=E5=85=A8=E9=87=8F=E6=98=8E=E6=96=87?=
++ =?UTF-8?q?=E6=98=BE=E7=A4=BA?=
++MIME-Version: 1.0
++Content-Type: text/plain; charset=UTF-8
++Content-Transfer-Encoding: 8bit
++
++自定义 User-Agent 前移到「添加服务商」页
++  上游只在 ProviderDetailScreen 暴露这个字段，也就是服务商已经建好之后：你
++  添加服务商 → 第一次模型刷新用默认 UA 发出去 → 网关拒了 → 再点进这个服务商
++  才发现 apiURL 下面多出一个你从没见过的「自定义 User-Agent」。对于只放行官方
++  客户端 UA 的网关，这个顺序是反的 —— 值必须在第一个请求之前就位，而不是失败
++  之后。
++  放在 API base 正下方（它本来就属于那里），门槛与上游详情页一致：仅
++  OpenAI / Anthropic 兼容协议（中转场景）。留空 → null → 默认 UA，所以不碰
++  这个字段的人行为与上游逐字节相同。
++
++Key 输入改为明文换行
++  上游用 PasswordVisualTransformation + 单行输入。手机上这是净亏：这个值是
++  用户刚从服务商控制台粘过来的，日常需要拿眼睛核对（粘贴有没有截断？这是中转
++  的 key 还是官方的？），而单行 + 掩码让它连显示态都是一条没人读得懂的横向
++  滚动。威胁模型也不支持掩码 —— 这是设备锁屏后面的应用设置页，不是共享屏幕。
++  singleLine = false 且不加 VisualTransformation 才会换行；等宽字体让逐字符
++  比对成为可能。
++
++配合模型改动：保存时写入 UA，并标记该实例为手动管理模型，然后不再自动全量
++拉取（详见前一个提交与 ForkModelPolicy 的说明）。
++---
++ .../app/ui/settings/AddProviderScreen.kt      | 95 +++++++++++++++----
++ 1 file changed, 79 insertions(+), 16 deletions(-)
++
++diff --git a/src/android/app/src/main/java/com/openminis/app/ui/settings/AddProviderScreen.kt b/src/android/app/src/main/java/com/openminis/app/ui/settings/AddProviderScreen.kt
++index 9b1f29a..4416b38 100644
++--- a/src/android/app/src/main/java/com/openminis/app/ui/settings/AddProviderScreen.kt
+++++ b/src/android/app/src/main/java/com/openminis/app/ui/settings/AddProviderScreen.kt
++@@ -499,13 +499,29 @@ private fun ColumnScope.ApiKeyConfigSection(
++     initialAppendV1: Boolean? = null,
++     onSaved: () -> Unit,
++ ) {
++-    val scope = rememberCoroutineScope()
++-    var showApiKeyPlaintext by remember { mutableStateOf(false) }
++     var appendV1Suffix by remember {
++         mutableStateOf(initialAppendV1 ?: (providerType != ProviderType.gemini))
++     }
++     // OpenAI API Format: false = Chat Completions, true = Responses API
++     var useResponsesAPI by remember { mutableStateOf(false) }
+++    // [FORK-MOD ua-at-create] Custom User-Agent, entered HERE at creation time.
+++    //
+++    // Upstream only exposes this on ProviderDetailScreen, i.e. AFTER the
+++    // provider exists: you add the provider, the very first model refresh fires
+++    // with the default UA, the gateway rejects it, and only then — on reopening
+++    // the provider — does a "Custom User-Agent" field you never saw appear
+++    // under the API base. For a gateway that ONLY accepts an official client UA
+++    // that ordering is backwards; the value has to be in place before the first
+++    // request, not after it fails.
+++    //
+++    // Same gate as upstream's detail screen: OpenAI-/Anthropic-compat protocols
+++    // (the relay case). Blank → null → default UA, so behaviour for everyone who
+++    // doesn't touch it is byte-identical to upstream.
+++    var customUserAgent by remember { mutableStateOf("") }
+++    val showUserAgentField = providerType == ProviderType.openAI ||
+++        providerType == ProviderType.anthropic
+++    // [FORK-MOD no-auto-fetch] Needed to record the manual-models policy on save.
+++    val addContext = LocalContext.current
++ 
++     // ── Credential ──────────────────────────────────────────────────────
++     val keyPlaceholder = when (providerType) {
++@@ -525,20 +541,16 @@ private fun ColumnScope.ApiKeyConfigSection(
++     ) {
++         SettingsCardBlock {
++             RowLabel(text = stringResource(R.string.provider_list_api_key))
+++            // [FORK-MOD apikey-plaintext] Shown in full, wrapping, no eye
+++            // toggle — same rationale as ProviderDetailScreen's block: this is
+++            // a value the user just pasted and needs to verify, and masking a
+++            // single-line field made it an unreadable horizontal scroll.
++             SectionTextField(
++                 value = apiKey,
++                 onValueChange = onApiKeyChange,
++                 placeholder = keyPlaceholder,
++-                singleLine = true,
++-                visualTransformation = if (showApiKeyPlaintext) VisualTransformation.None else PasswordVisualTransformation(),
++-                trailingIcon = {
++-                    IconButton(onClick = { showApiKeyPlaintext = !showApiKeyPlaintext }) {
++-                        Icon(
++-                            if (showApiKeyPlaintext) Icons.Default.VisibilityOff else Icons.Default.Visibility,
++-                            contentDescription = if (showApiKeyPlaintext) "Hide" else "Show",
++-                        )
++-                    }
++-                },
+++                singleLine = false,
+++                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
++             )
++         }
++     }
++@@ -588,9 +600,31 @@ private fun ColumnScope.ApiKeyConfigSection(
++                     title = stringResource(R.string.add_provider_auto_append_v1_quoted),
++                     checked = appendV1Suffix,
++                     onCheckedChange = { appendV1Suffix = it },
++-                    showDivider = false,
+++                    showDivider = showUserAgentField,
++                 )
++             }
+++            // [FORK-MOD ua-at-create] Custom User-Agent, right under the API
+++            // base — the field it belongs with, available BEFORE the first
+++            // request instead of only after the provider exists.
+++            if (showUserAgentField) {
+++                SettingsCardBlock {
+++                    RowLabel(text = stringResource(R.string.provider_detail_custom_user_agent))
+++                    SectionTextField(
+++                        value = customUserAgent,
+++                        onValueChange = { customUserAgent = it },
+++                        placeholder = stringResource(R.string.provider_detail_custom_user_agent_placeholder),
+++                        singleLine = true,
+++                    )
+++                }
+++            }
+++        }
+++        if (showUserAgentField) {
+++            Text(
+++                text = stringResource(R.string.fork_add_provider_ua_footer),
+++                style = MaterialTheme.typography.bodySmall,
+++                color = MaterialTheme.colorScheme.onSurfaceVariant,
+++                modifier = Modifier.padding(start = 32.dp, end = 32.dp, top = 8.dp),
+++            )
++         }
++     }
++ 
++@@ -635,6 +669,10 @@ private fun ColumnScope.ApiKeyConfigSection(
++                 appendV1Suffix = appendV1Suffix,
++                 // Only OpenAI-family providers expose the Responses API toggle.
++                 useResponsesAPI = providerType == ProviderType.openAI && useResponsesAPI,
+++                // [FORK-MOD ua-at-create] Persist the UA the user entered above,
+++                // so it is in effect for the FIRST request this instance makes.
+++                // Blank → null → default UA (upstream's semantics).
+++                customUserAgent = customUserAgent.trim().ifEmpty { null },
++             )
++             providerRepository.addInstance(instance)
++             // [T-empty-key-compat-endpoints] Never persist an empty string as
++@@ -642,8 +680,19 @@ private fun ColumnScope.ApiKeyConfigSection(
++             if (apiKey.isNotBlank()) {
++                 providerRepository.saveApiKey(instance.id, apiKey.trim())
++             }
++-            // Auto-refresh models in background (fetches from API or falls back to models.dev)
++-            scope.launch { providerRepository.refreshModels(instance) }
+++            // [FORK-MOD no-auto-fetch] Upstream fired refreshModels() here,
+++            // which is the "一键加载全部模型" behaviour this fork removes: it
+++            // populates the instance with the endpoint's ENTIRE catalog before
+++            // the user has seen it. Models are now pulled deliberately from the
+++            // 模型 tab's 获取模型 sheet, where they get to choose.
+++            //
+++            // Marking the instance manual also suppresses the DAILY background
+++            // refresh, which would otherwise re-inject the full catalog roughly
+++            // 24 hours later (see ForkModelPolicy for the full reasoning).
+++            com.openminis.app.ui.settings.mods.ForkModelPolicy.markManual(
+++                addContext,
+++                instance.id,
+++            )
++             onSaved()
++         },
++         modifier = Modifier
++@@ -919,7 +968,21 @@ private fun ColumnScope.OAuthConfigSection(
++                 providerRepository.addInstance(instance)
++                 // Store the manual token as API key — ProviderFactory uses loadApiKey() for all credential types
++                 providerRepository.saveApiKey(instance.id, manualToken.trim())
++-                scope.launch { providerRepository.refreshModels(instance) }
+++                // [FORK-MOD no-auto-fetch] This is the RELAY path (custom base +
+++                // static bearer, e.g. a third-party coding plan), i.e. exactly
+++                // where a gateway may front hundreds of models. Same treatment
+++                // as the API-key path: no automatic full-catalog load, and the
+++                // instance is flagged manual so the daily refresh can't inject
+++                // one later. Use 获取模型 in the 模型 tab to pick.
+++                //
+++                // The pure OAuth sign-in path above keeps upstream's refresh: it
+++                // resolves to one vendor's own short catalog (Codex ~7 models,
+++                // Claude ~10), so there is nothing to protect the user from and
+++                // seeing the list immediately is the better default.
+++                com.openminis.app.ui.settings.mods.ForkModelPolicy.markManual(
+++                    context,
+++                    instance.id,
+++                )
++                 onSaved()
++             },
++             modifier = Modifier
+diff --git a/patches/README.md b/patches/README.md
+new file mode 100644
+index 0000000..c2659a1
+--- /dev/null
++++ b/patches/README.md
+@@ -0,0 +1,45 @@
++# Fork patch series
++
++Generated by `scripts/fork/export-patches.sh` — do not hand-edit.
++
++- upstream base: `4ef2900` (Merge pull request #289 from OpenMinis/v1.13)
++- patches: 4
++
++Replay onto a fresh upstream checkout:
++
++```sh
++git am -3 patches/*.patch
++```
++
++## Commits
++
++- `d9cfc3d` build(fork): CI 出包 + 上游同步流水线
++- `e7745c8` feat(provider): 服务商页底部固定「配置 / 模型」双标签
++- `6a0483a` feat(models): 模型改为手动「获取模型」+ 勾选添加
++- `1f18dda` feat(provider): 添加服务商时即可填 UA，Key 全量明文显示
++
++## Files touched
++
++     .github/workflows/build-apk.yml                    | 214 ++++++++++++
++     .github/workflows/sync-upstream.yml                | 159 +++++++++
++     .gitignore                                         |   4 +
++     docs/FORK.md                                       | 137 ++++++++
++     scripts/fork/export-patches.sh                     |  64 ++++
++     scripts/fork/ndk-version.init.gradle.kts           |  41 +++
++     scripts/fork/prepare-rclone.sh                     | 190 +++++++++++
++     scripts/fork/shasum-shim.sh                        |  28 ++
++     scripts/fork/sync-upstream.sh                      |  85 +++++
++     .../app/data/repository/ProviderRepository.kt      |  13 +
++     .../openminis/app/ui/navigation/AppNavigation.kt   |   6 +-
++     .../openminis/app/ui/settings/AddProviderScreen.kt |  95 +++++-
++     .../app/ui/settings/ProviderDetailScreen.kt        | 142 +++++---
++     .../app/ui/settings/SettingsComponents.kt          |   9 +
++     .../app/ui/settings/mods/ForkModelPolicy.kt        |  60 ++++
++     .../app/ui/settings/mods/ProviderCatalogFetcher.kt | 220 ++++++++++++
++     .../ui/settings/mods/ProviderDetailTabbedScreen.kt |  93 +++++
++     .../app/ui/settings/mods/ProviderDetailTabs.kt     | 198 +++++++++++
++     .../ui/settings/mods/ProviderModelsFetchSheet.kt   | 374 +++++++++++++++++++++
++     .../app/ui/settings/mods/ProviderModelsTab.kt      | 332 ++++++++++++++++++
++     .../app/src/main/res/values-zh/strings_fork.xml    |  46 +++
++     .../app/src/main/res/values/strings_fork.xml       |  53 +++
++     22 files changed, 2506 insertions(+), 57 deletions(-)

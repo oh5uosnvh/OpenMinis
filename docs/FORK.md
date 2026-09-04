@@ -86,20 +86,25 @@ Git 三方合并对「在参数列表末尾加一行」几乎不会冲突；对�
 | `ui/settings/AddProviderScreen.kt` | Endpoint 段内新增自定义 UA 输入；Key 输入改明文换行；保存时写入 UA + 手动标记，去掉自动全量拉取 | 修上游「添加时没有 UA、添加完才冒出来」的反人类逻辑 |
 | `ui/settings/SettingsComponents.kt` | `SettingsScaffold` 加 `bottomBar` 参数（带默认值） | 底部 Tab 的唯一挂钩点 |
 | `ui/navigation/AppNavigation.kt` | `PROVIDER_DETAIL` 路由改指向 `ProviderDetailTabbedScreen` | 1 处 |
+| `ui/chat/ChatModelPickerSheet.kt` | `sheetState` 换成 `rememberForkStickySheet`，完成按钮走 `close()` | 面板只按显式操作收起，3 处 |
 | `data/repository/ProviderRepository.kt` | `autoRefreshModels` 开头加手动策略跳过 | 防止后台刷新回灌全部模型 |
 
 **fork 独有的新文件（零冲突）：**
 
 - `ui/settings/mods/ProviderDetailTabs.kt` —— 底部「配置 / 模型」固定 Tab + 能力标签
 - `ui/settings/mods/ProviderDetailTabbedScreen.kt` —— Tab 宿主，配置页直接复用上游实现
-- `ui/settings/mods/ProviderModelsTab.kt` —— kelive 风格模型管理页
-- `ui/settings/mods/ProviderModelsFetchSheet.kt` —— 获取模型 + 勾选面板
+- `ui/settings/mods/ProviderModelsTab.kt` —— kelive 风格模型管理页 + 底部操作栏 + 共享 controller
+- `ui/settings/mods/ProviderModelsFetchSheet.kt` —— 获取模型面板（厂商分组 / 全选 / 测活）
 - `ui/settings/mods/ProviderCatalogFetcher.kt` —— 只读目录抓取（fetch 与写入分离）
+- `ui/settings/mods/ForkModelFamily.kt` —— 按 id 归类厂商/系列的有序规则表
+- `ui/settings/mods/ForkModelHealth.kt` —— 批量测活（并发上限 / 超时 / 可取消）
+- `ui/settings/mods/ForkSwipeToRemoveRow.kt` —— 左滑移除 + 状态外提的 `ForkSwipeOpenState`
+- `ui/settings/mods/ForkStickySheet.kt` —— 只按显式操作收起的 ModalBottomSheet 状态
 - `ui/settings/mods/ForkModelPolicy.kt` —— 「此服务商模型由用户手动管理」标记
 - `res/values*/strings_fork.xml` —— fork 专属文案，**不碰上游 strings.xml**
 - `.github/workflows/*.yml`、`scripts/fork/*`、`docs/FORK.md`
 
-上游改了上表四个文件的**同一区域**时才会冲突。真冲突了，按 §4 处理。
+上游改了上表六个文件的**同一区域**时才会冲突。真冲突了，按 §4 处理。
 
 ---
 
