@@ -1,7 +1,6 @@
 package com.openminis.app.ui.settings.mods
 
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,15 +13,18 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Visibility
@@ -58,31 +60,42 @@ import com.openminis.app.R
 import com.openminis.app.data.model.ModelEntry
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.logging.AppLogger
+import com.openminis.app.ui.components.MinisAlertDialog
 import com.openminis.app.ui.components.MinisOutlinedButton
 import com.openminis.app.ui.settings.SettingsSection
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
- * [FORK] The "模型" tab — kelive-style model management.
+ * [FORK] The "模型" tab — kelivo-style model management.
  *
- * Layout note: the 获取模型 / 手动添加 / 测活 actions live in a BOTTOM bar
- * ([ProviderModelsActionBar], rendered by the tab host above the 配置/模型 tab
- * strip), not above the list. The list is the content; the actions are chrome,
- * and putting them on top pushed the first model row a third of the way down
- * the screen.
+ * ## Layout
  *
- * Differences from upstream's model section this replaces:
+ * Actions live in a BOTTOM bar ([ProviderModelsActionBar], rendered by the tab
+ * host above the 配置/模型 strip), not above the list: the list is the content,
+ * the actions are chrome, and putting them on top pushed the first model row a
+ * third of the way down the screen.
+ *
+ * The bar has two modes, mirroring kelivo:
+ *
+ *   normal    获取 · 添加 · 删除        (删除 = clear the whole list, confirmed)
+ *   测活选择   [全选/取消全选] · 测活    (entered from the top-right bolt)
+ *
+ * 测活 is a two-step action on purpose. Probing is a real network cost per
+ * model — running it implicitly over everything visible, as the first cut did,
+ * spends the user's quota on rows they never asked about. Now the top-right
+ * button only opens selection; nothing is sent until 测活 is pressed with a
+ * chosen set.
+ *
+ * ## Other differences from the upstream model section this replaces
  *
  *  - No one-tap "refresh everything". Upstream's `Refresh model list` calls
  *    `refreshModels`, which REPLACES the entry list with the endpoint's whole
- *    catalog. 获取模型 opens a picker instead ([ProviderModelsFetchSheet]).
+ *    catalog. 获取 opens a picker instead ([ProviderModelsFetchSheet]).
  *  - Swipe a row left to reveal a single square Remove button; tapping it
  *    removes immediately with no confirmation. Several rows can be held open at
  *    once and removed one after another — see [ForkSwipeOpenState] for why that
  *    requires hoisted state.
- *  - 测活 probes every visible model concurrently and marks each row
- *    alive/dead with its latency ([ForkModelHealth]).
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -183,40 +196,55 @@ fun ProviderModelsTabContent(
         SettingsSection(header = header) {
             entries.forEachIndexed { idx, entry ->
                 Box(modifier = Modifier.fillMaxWidth()) {
-                    ForkSwipeToRemoveRow(
-                        id = entry.id,
-                        openState = controller.swipeState,
-                        actionIcon = Icons.Filled.Delete,
-                        actionLabel = stringResource(R.string.common_delete),
-                        // Straight through, no dialog — that is the requested
-                        // behaviour and the reason the swipe exists. removeEntry
-                        // also strips the entry from any model groups and the
-                        // agent-loop pin, so nothing is left dangling.
-                        onRemove = {
-                            AppLogger.info(
-                                "ForkModels",
-                                "swipe-remove ${entry.id} (${entry.model.displayName})",
-                            )
-                            providerRepository.removeEntry(entry.id)
-                            controller.health.remove(entry.id)
-                        },
-                    ) {
+                    if (controller.testSelectionMode) {
+                        // No swipe-to-remove while selecting: the row's job right
+                        // now is to be ticked, and a horizontal drag that deletes
+                        // it mid-selection is the kind of surprise that loses data.
                         ModelRowBody(
                             entry = entry,
                             providerType = instance.providerType,
                             health = controller.health[entry.id],
-                            onClick = {
-                                // A tap while ANY row is open means "put them
-                                // back", not "navigate" — otherwise the open
-                                // rows are unreachable without a second swipe.
-                                if (controller.swipeState.hasOpen) {
-                                    controller.swipeState.closeAll()
-                                } else {
-                                    onModelEntryClick(entry.id)
-                                }
-                            },
-                            onLongClick = { menuEntryId = entry.id },
+                            selectionMark = entry.id in controller.testSelection,
+                            onClick = { controller.toggleTestSelection(entry.id) },
+                            onLongClick = {},
                         )
+                    } else {
+                        ForkSwipeToRemoveRow(
+                            id = entry.id,
+                            openState = controller.swipeState,
+                            actionIcon = Icons.Filled.Delete,
+                            actionLabel = stringResource(R.string.common_delete),
+                            // Straight through, no dialog — that is the requested
+                            // behaviour and the reason the swipe exists. removeEntry
+                            // also strips the entry from any model groups and the
+                            // agent-loop pin, so nothing is left dangling.
+                            onRemove = {
+                                AppLogger.info(
+                                    "ForkModels",
+                                    "swipe-remove ${entry.id} (${entry.model.displayName})",
+                                )
+                                providerRepository.removeEntry(entry.id)
+                                controller.health.remove(entry.id)
+                            },
+                        ) {
+                            ModelRowBody(
+                                entry = entry,
+                                providerType = instance.providerType,
+                                health = controller.health[entry.id],
+                                selectionMark = null,
+                                onClick = {
+                                    // A tap while ANY row is open means "put them
+                                    // back", not "navigate" — otherwise the open
+                                    // rows are unreachable without a second swipe.
+                                    if (controller.swipeState.hasOpen) {
+                                        controller.swipeState.closeAll()
+                                    } else {
+                                        onModelEntryClick(entry.id)
+                                    }
+                                },
+                                onLongClick = { menuEntryId = entry.id },
+                            )
+                        }
                     }
 
                     DropdownMenu(
@@ -266,6 +294,27 @@ fun ProviderModelsTabContent(
             onDismiss = { controller.showFetchSheet = false },
         )
     }
+
+    if (controller.showDeleteAllDialog) {
+        MinisAlertDialog(
+            onDismissRequest = { controller.showDeleteAllDialog = false },
+            title = stringResource(R.string.fork_models_delete_all_title),
+            text = stringResource(R.string.fork_models_delete_all_message, allEntries.size),
+            confirmText = stringResource(R.string.common_delete),
+            isDestructive = true,
+            onConfirm = {
+                // Removes ALL entries of this instance, filtered set or not: the
+                // button says 删除 (全部), and deleting "what happens to be
+                // visible" would be a trap for anyone who left a search active.
+                allEntries.forEach { providerRepository.removeEntry(it.id) }
+                controller.health.clear()
+                controller.swipeState.closeAll()
+                controller.searchQuery = ""
+                controller.showDeleteAllDialog = false
+                AppLogger.info("ForkModels", "delete-all: ${allEntries.size} entries of $instanceId")
+            },
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -274,6 +323,8 @@ private fun ModelRowBody(
     entry: ModelEntry,
     providerType: com.openminis.app.data.model.ProviderType,
     health: ForkModelHealth.Status?,
+    /** Non-null puts a selection tick in front of the row (测活 selection mode). */
+    selectionMark: Boolean?,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -289,8 +340,34 @@ private fun ModelRowBody(
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            HealthDot(providerType = providerType, health = health)
-            Spacer(Modifier.width(8.dp))
+            if (selectionMark != null) {
+                Icon(
+                    if (selectionMark) Icons.Default.CheckCircle
+                    else Icons.Default.RadioButtonUnchecked,
+                    contentDescription = null,
+                    tint = if (selectionMark) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                    },
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+            }
+            // Brand logo, with the 测活 result as a ring around it so the row
+            // gains no extra glyph.
+            ForkBrandAvatar(
+                modelId = entry.model.id,
+                displayName = entry.model.displayName,
+                providerName = providerType.displayName,
+                size = 28.dp,
+                ringColor = when (health) {
+                    is ForkModelHealth.Status.Alive -> Color(0xFF34C759)
+                    is ForkModelHealth.Status.Dead -> MaterialTheme.colorScheme.error
+                    else -> null
+                },
+            )
+            Spacer(Modifier.width(10.dp))
             Text(
                 entry.model.displayName,
                 style = MaterialTheme.typography.bodyLarge,
@@ -306,51 +383,37 @@ private fun ModelRowBody(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Spacer(Modifier.width(4.dp))
-            Icon(
-                Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.size(20.dp),
-            )
+            if (selectionMark == null) {
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.size(20.dp),
+                )
+            }
         }
         Text(
             entry.model.id,
             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = if (selectionMark != null) 68.dp else 38.dp),
         )
-        ForkModelCapabilityRow(entry.model)
-    }
-}
-
-/**
- * Leading dot. Doubles as the health indicator once a probe has run: the
- * provider accent colour means "not tested", green/red means tested. Reusing the
- * existing dot rather than adding a second glyph keeps the row height unchanged.
- */
-@Composable
-private fun HealthDot(
-    providerType: com.openminis.app.data.model.ProviderType,
-    health: ForkModelHealth.Status?,
-) {
-    val color = when (health) {
-        is ForkModelHealth.Status.Alive -> Color(0xFF34C759)
-        is ForkModelHealth.Status.Dead -> MaterialTheme.colorScheme.error
-        else -> com.openminis.app.ui.components.providerDotColor(providerType)
-    }
-    if (health is ForkModelHealth.Status.Running) {
-        CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp)
-    } else {
-        Box(modifier = Modifier.size(8.dp).background(color, CircleShape))
+        Row(modifier = Modifier.padding(start = if (selectionMark != null) 68.dp else 38.dp)) {
+            ForkModelCapabilityRow(entry.model)
+        }
     }
 }
 
 @Composable
 private fun HealthBadge(health: ForkModelHealth.Status?) {
     when (health) {
-        is ForkModelHealth.Status.Alive -> ForkCapabilityChip(
+        is ForkModelHealth.Status.Running ->
+            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+        is ForkModelHealth.Status.Alive -> Text(
             "%.1fs".format(health.latencyMs / 1000.0),
-            emphasized = true,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFF34C759),
         )
         is ForkModelHealth.Status.Dead -> Text(
             stringResource(R.string.fork_health_dead),
@@ -362,11 +425,44 @@ private fun HealthBadge(health: ForkModelHealth.Status?) {
 }
 
 /**
- * [FORK] Bottom action bar for the 模型 tab: 获取模型 · 手动添加 · 测活.
+ * [FORK] Top-bar action that enters 测活 selection mode (and leaves it).
  *
- * Rendered by [ProviderDetailTabbedScreen] directly above the 配置/模型 tab
- * strip, so it is reachable no matter how far the list is scrolled — the same
- * reason the tab strip itself is pinned.
+ * Placed in the scaffold's `actions` slot rather than the bottom bar because the
+ * bottom bar is where the *modes* live: 获取/添加/删除 are the default set, and
+ * the selection controls replace them. A trigger that lives inside the thing it
+ * replaces would have to disappear on its own press.
+ */
+@Composable
+fun ProviderModelsTopAction(controller: ProviderModelsController) {
+    IconButton(
+        onClick = {
+            if (controller.testSelectionMode) {
+                controller.exitTestSelection()
+            } else {
+                controller.swipeState.closeAll()
+                controller.testSelectionMode = true
+            }
+        },
+    ) {
+        Icon(
+            if (controller.testSelectionMode) Icons.Default.Close else Icons.Default.Bolt,
+            contentDescription = stringResource(
+                if (controller.testSelectionMode) R.string.fork_health_exit_selection
+                else R.string.fork_health_check,
+            ),
+            tint = if (controller.testSelectionMode) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                MaterialTheme.colorScheme.primary
+            },
+        )
+    }
+}
+
+/**
+ * [FORK] Bottom action bar for the 模型 tab.
+ *
+ * Two modes — see [ProviderModelsTabContent]'s docs for why 测活 is two-step.
  */
 @Composable
 fun ProviderModelsActionBar(
@@ -376,6 +472,91 @@ fun ProviderModelsActionBar(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    if (controller.testSelectionMode) {
+        val visibleIds = controller.visibleEntries.map { it.id }
+        val allSelected = visibleIds.isNotEmpty() && visibleIds.all { it in controller.testSelection }
+        val running = controller.healthJob?.isActive == true
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            MinisOutlinedButton(
+                onClick = {
+                    controller.testSelection = if (allSelected) {
+                        controller.testSelection - visibleIds.toSet()
+                    } else {
+                        controller.testSelection + visibleIds
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                enabled = visibleIds.isNotEmpty(),
+            ) {
+                Icon(
+                    if (allSelected) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    stringResource(
+                        if (allSelected) R.string.fork_fetch_clear_selection
+                        else R.string.fork_fetch_select_all,
+                    ),
+                )
+            }
+            MinisOutlinedButton(
+                onClick = {
+                    if (running) {
+                        controller.healthJob?.cancel()
+                        controller.healthJob = null
+                        return@MinisOutlinedButton
+                    }
+                    val targets = controller.visibleEntries
+                        .filter { it.id in controller.testSelection }
+                    if (targets.isEmpty()) return@MinisOutlinedButton
+                    targets.forEach { controller.health[it.id] = ForkModelHealth.Status.Pending }
+                    controller.healthJob = scope.launch {
+                        try {
+                            ForkModelHealth.probeAll(
+                                entries = targets,
+                                providerRepository = providerRepository,
+                                context = context,
+                            ) { entryId, status ->
+                                controller.health[entryId] = status
+                            }
+                        } finally {
+                            controller.healthJob = null
+                        }
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                enabled = running || controller.testSelection.isNotEmpty(),
+            ) {
+                Icon(
+                    if (running) Icons.Default.Stop else Icons.Default.Bolt,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    when {
+                        running -> stringResource(R.string.fork_health_stop)
+                        controller.testSelection.isEmpty() -> stringResource(R.string.fork_health_check)
+                        else -> stringResource(
+                            R.string.fork_health_check_n,
+                            controller.testSelection.size,
+                        )
+                    },
+                )
+            }
+        }
+        return
+    }
 
     Row(
         modifier = Modifier
@@ -389,70 +570,40 @@ fun ProviderModelsActionBar(
             modifier = Modifier.weight(1f),
         ) {
             Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(4.dp))
-            Text(stringResource(R.string.fork_models_fetch))
+            Spacer(Modifier.width(6.dp))
+            Text(stringResource(R.string.fork_models_fetch_short))
         }
         MinisOutlinedButton(
             onClick = onAddCustomModel,
             modifier = Modifier.weight(1f),
         ) {
             Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(4.dp))
-            Text(stringResource(R.string.fork_models_add_custom))
+            Spacer(Modifier.width(6.dp))
+            Text(stringResource(R.string.fork_models_add_short))
         }
-        // 测活 doubles as its own cancel button while running: a batch over 40
-        // models takes real time, and a run the user cannot stop is a trap.
         MinisOutlinedButton(
-            onClick = {
-                val job = controller.healthJob
-                if (job != null && job.isActive) {
-                    job.cancel()
-                    controller.healthJob = null
-                    return@MinisOutlinedButton
-                }
-                val targets = controller.visibleEntries
-                if (targets.isEmpty()) return@MinisOutlinedButton
-                targets.forEach { controller.health[it.id] = ForkModelHealth.Status.Pending }
-                controller.healthJob = scope.launch {
-                    try {
-                        ForkModelHealth.probeAll(
-                            entries = targets,
-                            providerRepository = providerRepository,
-                            context = context,
-                        ) { entryId, status ->
-                            controller.health[entryId] = status
-                        }
-                    } finally {
-                        controller.healthJob = null
-                    }
-                }
-            },
+            onClick = { controller.showDeleteAllDialog = true },
             modifier = Modifier.weight(1f),
             enabled = controller.visibleEntries.isNotEmpty(),
+            colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                contentColor = MaterialTheme.colorScheme.error,
+            ),
         ) {
-            val running = controller.healthJob?.isActive == true
-            Icon(
-                if (running) Icons.Default.Stop else Icons.Default.Bolt,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(4.dp))
-            Text(
-                stringResource(
-                    if (running) R.string.fork_health_stop else R.string.fork_health_check,
-                ),
-            )
+            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(stringResource(R.string.common_delete))
         }
     }
 }
 
 /**
- * [FORK] State shared between the 模型 tab's list and its bottom action bar.
+ * [FORK] State shared between the 模型 tab's list, its top-bar action and its
+ * bottom action bar.
  *
- * They are rendered into different scaffold slots (content vs bottomBar), so
- * neither can own state the other needs — hence a single holder created by the
- * host. It also outlives a tab switch, so a completed 测活 run's results are
- * still there when the user comes back from 配置.
+ * All three are rendered into different scaffold slots (actions / content /
+ * bottomBar), so none of them can own state the others need — hence a single
+ * holder created by the host. It also outlives a tab switch, so a completed 测活
+ * run's results are still there when the user comes back from 配置.
  */
 @androidx.compose.runtime.Stable
 class ProviderModelsController(
@@ -461,14 +612,32 @@ class ProviderModelsController(
 ) {
     var searchQuery by mutableStateOf("")
     var showFetchSheet by mutableStateOf(false)
+    var showDeleteAllDialog by mutableStateOf(false)
 
-    /** Entries currently shown (post-search) — what 测活 operates on. */
+    /** Entries currently shown (post-search). */
     var visibleEntries by mutableStateOf<List<ModelEntry>>(emptyList())
 
     /** entryId → probe status. */
     val health = mutableStateMapOf<String, ForkModelHealth.Status>()
 
     var healthJob: Job? by mutableStateOf(null)
+
+    /** True while the user is picking which models to probe. */
+    var testSelectionMode by mutableStateOf(false)
+
+    /** entryIds picked for the next probe run. */
+    var testSelection by mutableStateOf<Set<String>>(emptySet())
+
+    fun toggleTestSelection(id: String) {
+        testSelection = if (id in testSelection) testSelection - id else testSelection + id
+    }
+
+    fun exitTestSelection() {
+        healthJob?.cancel()
+        healthJob = null
+        testSelectionMode = false
+        testSelection = emptySet()
+    }
 }
 
 @Composable

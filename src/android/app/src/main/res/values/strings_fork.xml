@@ -19,15 +19,19 @@
     <!-- Models tab -->
     <string name="fork_models_title">Models</string>
     <string name="fork_models_fetch">Fetch Models</string>
+    <string name="fork_models_fetch_short">Fetch</string>
     <string name="fork_models_add_custom">Add Manually</string>
+    <string name="fork_models_add_short">Add</string>
     <string name="fork_models_search_placeholder">Search models</string>
     <string name="fork_models_clear_search">Clear search</string>
     <string name="fork_models_count">%1$d models</string>
     <string name="fork_models_count_filtered">%1$d / %2$d models</string>
-    <string name="fork_models_empty">No models yet. Tap “Fetch Models” to pull the provider catalog and pick the ones you want, or add one manually.</string>
+    <string name="fork_models_empty">No models yet. Tap “Fetch” to pull the provider catalog and pick the ones you want, or add one manually.</string>
     <string name="fork_models_empty_search">No model matches “%1$s”.</string>
     <string name="fork_models_enabled">Enabled</string>
     <string name="fork_models_hidden_badge">Hidden</string>
+    <string name="fork_models_delete_all_title">Delete all models?</string>
+    <string name="fork_models_delete_all_message">This removes all %1$d models from this provider. You can fetch them again at any time.</string>
 
     <!-- Fetch sheet -->
     <string name="fork_fetch_title">Fetch Models</string>
@@ -44,6 +48,7 @@
     <string name="fork_fetch_already_added">Added</string>
     <string name="fork_fetch_added_toast">Added %1$d model(s)</string>
     <string name="fork_fetch_found">Found %1$d models</string>
+    <string name="fork_fetch_invert">Invert selection</string>
 
     <!-- Capability chips -->
     <string name="fork_chip_chat">chat</string>
@@ -51,8 +56,10 @@
 
     <!-- Health check (测活) -->
     <string name="fork_health_check">Test</string>
+    <string name="fork_health_check_n">Test %1$d</string>
     <string name="fork_health_stop">Stop</string>
     <string name="fork_health_dead">failed</string>
+    <string name="fork_health_exit_selection">Exit selection</string>
 
     <!-- Add provider -->
     <string name="fork_add_provider_ua_footer">Some gateways reject the default User-Agent and only accept official clients. Leave blank unless your endpoint requires a specific one.</string>

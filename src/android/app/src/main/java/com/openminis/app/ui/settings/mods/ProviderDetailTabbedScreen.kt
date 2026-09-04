@@ -65,14 +65,19 @@ fun ProviderDetailTabbedScreen(
     val modelsController = rememberProviderModelsController()
 
     // Back semantics, in priority order:
-    //  1. swipe-open rows → put them back (a destructive button is visible; the
+    //  1. 测活 selection mode → leave it (the top-bar ✕ does the same, but back
+    //     is what a user reaches for first).
+    //  2. swipe-open rows → put them back (a destructive button is visible; the
     //     user's most likely intent is "undo that reveal", not "leave").
-    //  2. on 模型 → return to 配置 first; the two tabs read as one screen.
-    //  3. otherwise fall through to the navigation pop.
+    //  3. on 模型 → return to 配置 first; the two tabs read as one screen.
+    //  4. otherwise fall through to the navigation pop.
     BackHandler(
-        enabled = tab == ProviderDetailTab.MODELS || modelsController.swipeState.hasOpen,
+        enabled = tab == ProviderDetailTab.MODELS ||
+            modelsController.swipeState.hasOpen ||
+            modelsController.testSelectionMode,
     ) {
         when {
+            modelsController.testSelectionMode -> modelsController.exitTestSelection()
             modelsController.swipeState.hasOpen -> modelsController.swipeState.closeAll()
             else -> tab = ProviderDetailTab.CONFIG
         }
@@ -82,9 +87,13 @@ fun ProviderDetailTabbedScreen(
         ProviderDetailBottomTabs(
             selected = tab,
             onSelect = { next ->
-                // Leaving 模型 with rows held open would strand them open on
-                // return; reset so the tab is always entered in a clean state.
-                if (next != tab) modelsController.swipeState.closeAll()
+                // Leaving 模型 with rows held open (or mid-selection) would
+                // strand that state on return; reset so the tab is always
+                // entered clean.
+                if (next != tab) {
+                    modelsController.swipeState.closeAll()
+                    modelsController.exitTestSelection()
+                }
                 tab = next
             },
         )
@@ -111,6 +120,11 @@ fun ProviderDetailTabbedScreen(
                 SettingsScaffold(
                     title = instance.label,
                     onBack = onBack,
+                    // 测活 lives in the top bar so the bottom bar is free to be
+                    // the MODE surface: 获取/添加/删除 by default, 全选+测活 while
+                    // selecting. A trigger inside the thing it replaces would
+                    // have to vanish on its own press.
+                    actions = { ProviderModelsTopAction(modelsController) },
                     bottomBar = {
                         // Action bar sits directly above the tab strip, sharing
                         // its surface so the two read as one pinned footer.
@@ -135,7 +149,10 @@ fun ProviderDetailTabbedScreen(
                                 ProviderDetailBottomTabs(
                                     selected = tab,
                                     onSelect = { next ->
-                                        if (next != tab) modelsController.swipeState.closeAll()
+                                        if (next != tab) {
+                                            modelsController.swipeState.closeAll()
+                                            modelsController.exitTestSelection()
+                                        }
                                         tab = next
                                     },
                                     // Footer already draws the surface + rule.

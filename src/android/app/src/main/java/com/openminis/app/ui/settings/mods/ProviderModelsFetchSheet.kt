@@ -1,5 +1,6 @@
 package com.openminis.app.ui.settings.mods
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -7,7 +8,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -19,22 +19,22 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,6 +46,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -58,46 +59,50 @@ import com.openminis.app.data.model.ModelEntry
 import com.openminis.app.data.model.ProviderInstance
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.ui.components.MinisButton
-import com.openminis.app.ui.components.MinisSmallTextButton
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
  * [FORK] The 获取模型 sheet — fetch the provider catalog, tick what you want,
- * confirm. Grouped by model family, kelive-style.
+ * confirm. Grouped by model family with brand logos, following kelivo's
+ * `_showModelFetchSheet` layout (provider_detail_page.dart:3360).
  *
- * The whole reason this exists: upstream's model refresh is fetch-and-replace
- * with no选择环节. Here the fetch writes NOTHING (see
- * [ProviderCatalogFetcher.fetchCatalog]); the only write happens when the user
- * presses 添加, and it is additive.
+ * Layout, top to bottom:
+ *   handle
+ *   title + count + close ✕
+ *   search field, with 全选/取消全选 and 反选 as trailing icons (kelivo puts them
+ *     inside the field rather than on their own row — it keeps the toolbar to
+ *     one line and the icons next to the text they act on)
+ *   family sections: chevron + name + count + a select-all for the whole group
+ *   rows: tick + brand avatar + name + id + capability chips + a ⚡ that probes
+ *     THAT model on its own, ✓ 已添加 when already present
+ *   添加 (n) — the only write
  *
- * Behaviours worth knowing:
+ * ## Per-row ⚡ rather than a batch button
  *
- *  - **Sticky sheet.** Closes only via the X button or the device back gesture
- *    ([rememberForkStickySheet]). Scrim taps and swipe-down are vetoed, because
- *    on a long list both fire constantly and take the search text and scroll
- *    position with them.
- *  - **Family sections.** A relay's `/v1/models` is a flat wall of ids;
- *    [ForkModelFamily] groups them (Claude Opus / GPT-5 / Gemini …) so the list
- *    is navigable. Sections collapse.
- *  - **全选 / 取消全选** applies to the CURRENTLY FILTERED, selectable rows —
- *    the ones the user can see. A "select all" that silently also picks up
- *    hidden-by-search rows would make the confirm count a surprise.
- *  - **测活 before adding.** Probes the fetched catalog so the user can add only
- *    the ids the relay actually serves. Runs on the fetched LLMModels, not on
- *    persisted entries, hence the synthetic ModelEntry wrapper below.
- *  - Models already on the instance render as 已添加 and are non-selectable —
- *    pre-ticking them would make the confirm button's count a lie about what is
- *    about to change.
+ * The bar-level 测活 belongs to the 模型 tab, where the models are already yours.
+ * Here the useful question is narrower — "is THIS id real before I adopt it?" —
+ * and a relay catalog is exactly where you want to ask it one model at a time
+ * instead of spending a request on all 400. The bolt is per row, fires
+ * immediately, and shows the result in place.
+ *
+ * ## No drag, no shudder
+ *
+ * Built on [ForkBottomSheet] (a Dialog), not ModalBottomSheet: swiping a row
+ * cannot move the container because there is no draggable offset to move. See
+ * [ForkBottomSheetState] for the full reasoning.
+ *
+ * Models already on the instance render as 已添加 and are non-selectable —
+ * pre-ticking them would make the confirm button's count a lie about what is
+ * about to change.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProviderModelsFetchSheet(
     instance: ProviderInstance,
     providerRepository: ProviderRepository,
     onDismiss: () -> Unit,
 ) {
-    val sheet = rememberForkStickySheet(onDismiss)
+    val sheetState = rememberForkBottomSheetState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
@@ -108,8 +113,10 @@ fun ProviderModelsFetchSheet(
     var searchQuery by remember { mutableStateOf("") }
     var reloadTick by remember { mutableStateOf(0) }
     var collapsedFamilies by remember { mutableStateOf<Set<String>>(emptySet()) }
+
+    // modelId → probe status, for the per-row ⚡.
     val health = remember { mutableStateMapOf<String, ForkModelHealth.Status>() }
-    var healthJob by remember { mutableStateOf<Job?>(null) }
+    val probeJobs = remember { mutableMapOf<String, Job>() }
 
     val existingIds = remember(instance.id, catalog) {
         providerRepository.entriesFor(instance.id).map { it.baseModel.id }.toSet()
@@ -131,6 +138,31 @@ fun ProviderModelsFetchSheet(
         isLoading = false
     }
 
+    fun probe(model: LLMModel) {
+        // Already running → the bolt acts as cancel for that row.
+        probeJobs[model.id]?.let {
+            if (it.isActive) {
+                it.cancel()
+                health.remove(model.id)
+                probeJobs.remove(model.id)
+                return
+            }
+        }
+        health[model.id] = ForkModelHealth.Status.Running
+        probeJobs[model.id] = scope.launch {
+            // A throwaway ModelEntry — nothing is persisted. ForkModelHealth needs
+            // one only to resolve the owning instance's credentials.
+            val entry = ModelEntry(
+                providerInstanceId = instance.id,
+                baseModel = model,
+                uuid = "probe-${model.id}",
+            )
+            val status = ForkModelHealth.probeOne(entry, providerRepository, context)
+            health[model.id] = status
+            probeJobs.remove(model.id)
+        }
+    }
+
     val q = searchQuery.trim().lowercase()
     val filtered = if (q.isEmpty()) {
         catalog
@@ -143,318 +175,269 @@ fun ProviderModelsFetchSheet(
     // Only rows the user can actually act on count towards 全选.
     val selectableIds = filtered.filter { it.id !in existingIds }.map { it.id }
     val allSelected = selectableIds.isNotEmpty() && selectableIds.all { it in selected }
-    val healthRunning = healthJob?.isActive == true
 
-    ModalBottomSheet(
-        onDismissRequest = {
-            // Reached only by the back gesture — material3's dialog path calls
-            // this directly, bypassing confirmValueChange. Scrim/swipe are
-            // already vetoed by the sticky state, so this IS the back button.
-            healthJob?.cancel()
+    ForkBottomSheet(
+        state = sheetState,
+        onDismiss = {
+            probeJobs.values.forEach { it.cancel() }
             onDismiss()
         },
-        sheetState = sheet.state,
     ) {
-        Column(
+        ForkSheetHandle()
+
+        // ── Header ──────────────────────────────────────────────────────
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.92f),
+                .padding(start = 20.dp, end = 8.dp)
+                .padding(bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            // ── Header ──────────────────────────────────────────────────
-            Row(
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    stringResource(R.string.fork_fetch_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    if (isLoading || errorMessage != null) {
+                        stringResource(R.string.fork_fetch_subtitle)
+                    } else {
+                        stringResource(R.string.fork_fetch_found, catalog.size)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            // Explicit close — one of only two ways out of this sheet.
+            IconButton(onClick = { sheetState.close() }) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = stringResource(R.string.fork_fetch_close),
+                )
+            }
+        }
+
+        // ── Search + selection toggles (kelivo puts them in the field) ────
+        if (!isLoading && errorMessage == null && catalog.isNotEmpty()) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text(stringResource(R.string.fork_models_search_placeholder)) },
+                singleLine = true,
+                shape = RoundedCornerShape(50),
+                colors = OutlinedTextFieldDefaults.colors(
+                    // The sheet's container is surfaceContainerLow; without an
+                    // explicit fill the field would be invisible against it.
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 20.dp, end = 8.dp)
-                    .padding(bottom = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        stringResource(R.string.fork_fetch_title),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        if (isLoading || errorMessage != null) {
-                            stringResource(R.string.fork_fetch_subtitle)
-                        } else {
-                            stringResource(R.string.fork_fetch_found, catalog.size)
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                // Explicit close — one of only two ways out of this sheet.
-                IconButton(
-                    onClick = {
-                        healthJob?.cancel()
-                        sheet.close()
-                    },
-                ) {
+                    .padding(horizontal = 20.dp, vertical = 4.dp),
+                leadingIcon = {
                     Icon(
-                        Icons.Default.Close,
-                        contentDescription = stringResource(R.string.fork_fetch_close),
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                }
-            }
-
-            // ── Toolbar: search + 全选 + 测活 ────────────────────────────
-            if (!isLoading && errorMessage == null && catalog.isNotEmpty()) {
-                if (catalog.size >= 6) {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        placeholder = { Text(stringResource(R.string.fork_models_search_placeholder)) },
-                        singleLine = true,
-                        shape = RoundedCornerShape(50),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 4.dp),
-                        leadingIcon = {
+                },
+                trailingIcon = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = {
+                                selected = if (allSelected) {
+                                    selected - selectableIds.toSet()
+                                } else {
+                                    selected + selectableIds
+                                }
+                            },
+                            enabled = selectableIds.isNotEmpty(),
+                        ) {
                             Icon(
-                                Icons.Default.Search,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
+                                if (allSelected) Icons.Default.CheckBox
+                                else Icons.Default.CheckBoxOutlineBlank,
+                                contentDescription = stringResource(
+                                    if (allSelected) R.string.fork_fetch_clear_selection
+                                    else R.string.fork_fetch_select_all,
+                                ),
+                                modifier = Modifier.size(20.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                        },
-                        trailingIcon = {
-                            if (searchQuery.isNotEmpty()) {
-                                IconButton(onClick = { searchQuery = "" }) {
-                                    Icon(
-                                        Icons.Default.Close,
-                                        contentDescription = stringResource(R.string.fork_models_clear_search),
-                                        modifier = Modifier.size(18.dp),
-                                    )
+                        }
+                        // 反选 — kelivo's Repeat icon. Useful after a search:
+                        // "everything except what I already ticked".
+                        IconButton(
+                            onClick = {
+                                val next = selected.toMutableSet()
+                                selectableIds.forEach {
+                                    if (it in next) next.remove(it) else next.add(it)
                                 }
-                            }
-                        },
-                    )
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    MinisSmallTextButton(
-                        onClick = {
-                            selected = if (allSelected) {
-                                selected - selectableIds.toSet()
-                            } else {
-                                selected + selectableIds
-                            }
-                        },
-                        enabled = selectableIds.isNotEmpty(),
-                    ) {
-                        Text(
-                            stringResource(
-                                if (allSelected) R.string.fork_fetch_clear_selection
-                                else R.string.fork_fetch_select_all,
-                            ),
-                        )
-                    }
-                    Spacer(Modifier.weight(1f))
-                    MinisSmallTextButton(
-                        onClick = {
-                            if (healthRunning) {
-                                healthJob?.cancel()
-                                healthJob = null
-                                return@MinisSmallTextButton
-                            }
-                            // Probe what the user can see. A catalog-wide run on
-                            // a 400-model relay would take many minutes for rows
-                            // they have filtered away anyway.
-                            val targets = filtered.map { model ->
-                                // ForkModelHealth takes ModelEntry (it needs the
-                                // owning instance id to resolve credentials).
-                                // These are NOT persisted — a throwaway wrapper
-                                // so the probe can run before anything is added.
-                                ModelEntry(
-                                    providerInstanceId = instance.id,
-                                    baseModel = model,
-                                    uuid = "probe-${model.id}",
-                                )
-                            }
-                            if (targets.isEmpty()) return@MinisSmallTextButton
-                            targets.forEach { health[it.baseModel.id] = ForkModelHealth.Status.Pending }
-                            healthJob = scope.launch {
-                                try {
-                                    ForkModelHealth.probeAll(
-                                        entries = targets,
-                                        providerRepository = providerRepository,
-                                        context = context,
-                                    ) { entryId, status ->
-                                        // entryId is "probe-<modelId>"; key the
-                                        // map by model id so rows can read it.
-                                        health[entryId.removePrefix("probe-")] = status
-                                    }
-                                } finally {
-                                    healthJob = null
-                                }
-                            }
-                        },
-                    ) {
-                        Icon(
-                            if (healthRunning) Icons.Default.Stop else Icons.Default.Bolt,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            stringResource(
-                                if (healthRunning) R.string.fork_health_stop
-                                else R.string.fork_health_check,
-                            ),
-                        )
-                    }
-                }
-            }
-
-            // ── Body ────────────────────────────────────────────────────
-            Box(modifier = Modifier.weight(1f)) {
-                when {
-                    isLoading -> Column(
-                        modifier = Modifier.fillMaxWidth().padding(32.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
-                        Text(
-                            stringResource(R.string.fork_fetch_loading),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
-                    errorMessage != null -> Column(
-                        modifier = Modifier.fillMaxWidth().padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Text(
-                            stringResource(R.string.fork_fetch_failed, errorMessage!!),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                        MinisButton(onClick = { reloadTick++ }) {
-                            Text(stringResource(R.string.fork_fetch_retry))
+                                selected = next
+                            },
+                            enabled = selectableIds.isNotEmpty(),
+                        ) {
+                            Icon(
+                                Icons.Default.SwapHoriz,
+                                contentDescription = stringResource(R.string.fork_fetch_invert),
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
+                },
+            )
+        }
 
-                    catalog.isEmpty() -> Text(
-                        stringResource(R.string.fork_fetch_empty),
+        // ── Body ────────────────────────────────────────────────────────
+        Box(modifier = Modifier.weight(1f)) {
+            when {
+                isLoading -> Column(
+                    modifier = Modifier.fillMaxWidth().padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+                    Text(
+                        stringResource(R.string.fork_fetch_loading),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(24.dp),
                     )
+                }
 
-                    else -> LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                        sections.forEach { (family, models) ->
-                            val collapsed = family.key in collapsedFamilies
-                            val familySelectable = models
-                                .filter { it.id !in existingIds }
-                                .map { it.id }
-                            val familyAllSelected = familySelectable.isNotEmpty() &&
-                                familySelectable.all { it in selected }
+                errorMessage != null -> Column(
+                    modifier = Modifier.fillMaxWidth().padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        stringResource(R.string.fork_fetch_failed, errorMessage!!),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    MinisButton(onClick = { reloadTick++ }) {
+                        Text(stringResource(R.string.fork_fetch_retry))
+                    }
+                }
 
-                            item(key = "family-${family.key}") {
-                                FamilyHeader(
-                                    title = family.displayName,
-                                    count = models.size,
-                                    collapsed = collapsed,
-                                    allSelected = familyAllSelected,
-                                    canSelect = familySelectable.isNotEmpty(),
-                                    onToggleCollapse = {
-                                        collapsedFamilies = if (collapsed) {
-                                            collapsedFamilies - family.key
+                catalog.isEmpty() -> Text(
+                    stringResource(R.string.fork_fetch_empty),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(24.dp),
+                )
+
+                else -> LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                    sections.forEach { (family, models) ->
+                        val collapsed = family.key in collapsedFamilies
+                        val familySelectable = models
+                            .filter { it.id !in existingIds }
+                            .map { it.id }
+                        val familyAllSelected = familySelectable.isNotEmpty() &&
+                            familySelectable.all { it in selected }
+
+                        item(key = "family-${family.key}") {
+                            FamilyHeader(
+                                title = family.displayName,
+                                count = models.size,
+                                collapsed = collapsed,
+                                allSelected = familyAllSelected,
+                                canSelect = familySelectable.isNotEmpty(),
+                                onToggleCollapse = {
+                                    collapsedFamilies = if (collapsed) {
+                                        collapsedFamilies - family.key
+                                    } else {
+                                        collapsedFamilies + family.key
+                                    }
+                                },
+                                // Per-section select-all: on a relay with 20
+                                // families, "I want every Claude model" is the
+                                // common intent and the global 全选 is too blunt.
+                                onToggleSelectAll = {
+                                    selected = if (familyAllSelected) {
+                                        selected - familySelectable.toSet()
+                                    } else {
+                                        selected + familySelectable
+                                    }
+                                },
+                            )
+                        }
+
+                        if (!collapsed) {
+                            // Composite key: a relay occasionally lists the same
+                            // id twice, and a duplicate LazyColumn key is a hard
+                            // crash rather than a cosmetic issue.
+                            items(models, key = { "${family.key}-${it.id}" }) { model ->
+                                CatalogRow(
+                                    model = model,
+                                    providerLabel = instance.providerType.displayName,
+                                    alreadyAdded = model.id in existingIds,
+                                    isSelected = model.id in selected,
+                                    health = health[model.id],
+                                    onToggle = {
+                                        selected = if (model.id in selected) {
+                                            selected - model.id
                                         } else {
-                                            collapsedFamilies + family.key
+                                            selected + model.id
                                         }
                                     },
-                                    // Per-section select-all: on a relay with 20
-                                    // families, "I want every Claude model" is the
-                                    // common intent and the global 全选 is too blunt.
-                                    onToggleSelectAll = {
-                                        selected = if (familyAllSelected) {
-                                            selected - familySelectable.toSet()
-                                        } else {
-                                            selected + familySelectable
-                                        }
-                                    },
+                                    onProbe = { probe(model) },
                                 )
-                            }
-
-                            if (!collapsed) {
-                                // Composite key: a relay occasionally lists the
-                                // same id twice, and a duplicate LazyColumn key
-                                // is a hard crash rather than a cosmetic issue.
-                                items(models, key = { "${family.key}-${it.id}" }) { model ->
-                                    CatalogRow(
-                                        model = model,
-                                        alreadyAdded = model.id in existingIds,
-                                        isSelected = model.id in selected,
-                                        health = health[model.id],
-                                        onToggle = {
-                                            selected = if (model.id in selected) {
-                                                selected - model.id
-                                            } else {
-                                                selected + model.id
-                                            }
-                                        },
-                                    )
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(horizontal = 20.dp),
-                                        thickness = 0.5.dp,
-                                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                                    )
-                                }
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(horizontal = 20.dp),
+                                    thickness = 0.5.dp,
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                                )
                             }
                         }
                     }
                 }
             }
+        }
 
-            // ── Confirm ─────────────────────────────────────────────────
-            if (!isLoading && errorMessage == null && catalog.isNotEmpty()) {
-                MinisButton(
-                    onClick = {
-                        val picks = catalog.filter { it.id in selected }
-                        val added = ProviderCatalogFetcher.addSelected(
-                            instance.id,
-                            picks,
-                            providerRepository,
-                        )
-                        android.widget.Toast.makeText(
-                            context,
-                            context.getString(R.string.fork_fetch_added_toast, added),
-                            android.widget.Toast.LENGTH_SHORT,
-                        ).show()
-                        healthJob?.cancel()
-                        sheet.close()
-                    },
-                    enabled = selected.isNotEmpty(),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 12.dp)
-                        .navigationBarsPadding(),
-                ) {
-                    Text(
-                        if (selected.isEmpty()) {
-                            stringResource(R.string.fork_fetch_add_none)
-                        } else {
-                            stringResource(R.string.fork_fetch_add_selected, selected.size)
-                        },
+        // ── Confirm ─────────────────────────────────────────────────────
+        if (!isLoading && errorMessage == null && catalog.isNotEmpty()) {
+            MinisButton(
+                onClick = {
+                    val picks = catalog.filter { it.id in selected }
+                    val added = ProviderCatalogFetcher.addSelected(
+                        instance.id,
+                        picks,
+                        providerRepository,
                     )
-                }
-            } else {
-                Spacer(Modifier.height(12.dp).navigationBarsPadding())
+                    android.widget.Toast.makeText(
+                        context,
+                        context.getString(R.string.fork_fetch_added_toast, added),
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                    sheetState.close()
+                },
+                enabled = selected.isNotEmpty(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .navigationBarsPadding(),
+            ) {
+                Text(
+                    if (selected.isEmpty()) {
+                        stringResource(R.string.fork_fetch_add_none)
+                    } else {
+                        stringResource(R.string.fork_fetch_add_selected, selected.size)
+                    },
+                )
             }
+        } else {
+            Spacer(Modifier.height(12.dp).navigationBarsPadding())
         }
     }
 }
 
-/** Collapsible family section header with its own select-all toggle. */
+/**
+ * Collapsible family section header with its own select-all toggle.
+ * kelivo's version: rotating chevron, name, count, then a control that adds or
+ * removes the entire group.
+ */
 @Composable
 private fun FamilyHeader(
     title: String,
@@ -465,6 +448,12 @@ private fun FamilyHeader(
     onToggleCollapse: () -> Unit,
     onToggleSelectAll: () -> Unit,
 ) {
+    // Chevron points right when collapsed, down when open — animated so the
+    // section reads as folding rather than swapping glyphs.
+    val rotation by animateFloatAsState(
+        targetValue = if (collapsed) 0f else 90f,
+        label = "familyChevron",
+    )
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -475,14 +464,14 @@ private fun FamilyHeader(
             )
             .heightIn(min = 46.dp)
             .clickable(onClick = onToggleCollapse)
-            .padding(horizontal = 12.dp),
+            .padding(start = 8.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            if (collapsed) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
+            Icons.AutoMirrored.Filled.KeyboardArrowRight,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp),
+            modifier = Modifier.size(22.dp).rotate(rotation),
         )
         Spacer(Modifier.width(8.dp))
         Text(
@@ -498,14 +487,14 @@ private fun FamilyHeader(
         )
         if (canSelect) {
             Spacer(Modifier.width(4.dp))
-            IconButton(onClick = onToggleSelectAll, modifier = Modifier.size(32.dp)) {
+            IconButton(onClick = onToggleSelectAll, modifier = Modifier.size(36.dp)) {
                 Icon(
-                    if (allSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                    if (allSelected) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
                     contentDescription = null,
                     tint = if (allSelected) {
                         MaterialTheme.colorScheme.primary
                     } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                     },
                     modifier = Modifier.size(20.dp),
                 )
@@ -517,40 +506,45 @@ private fun FamilyHeader(
 @Composable
 private fun CatalogRow(
     model: LLMModel,
+    providerLabel: String,
     alreadyAdded: Boolean,
     isSelected: Boolean,
     health: ForkModelHealth.Status?,
     onToggle: () -> Unit,
+    onProbe: () -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .then(if (alreadyAdded) Modifier else Modifier.clickable(onClick = onToggle))
             .heightIn(min = 68.dp)
-            .padding(horizontal = 20.dp, vertical = 10.dp),
+            .padding(start = 20.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
         verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            when {
-                health is ForkModelHealth.Status.Running ->
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                alreadyAdded -> Icon(
-                    Icons.Default.CheckCircle,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                    modifier = Modifier.size(20.dp),
-                )
-                else -> Icon(
-                    if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                    contentDescription = null,
-                    tint = if (isSelected) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-                    },
-                    modifier = Modifier.size(20.dp),
-                )
-            }
+            Icon(
+                if (alreadyAdded || isSelected) Icons.Default.CheckCircle
+                else Icons.Default.RadioButtonUnchecked,
+                contentDescription = null,
+                tint = when {
+                    alreadyAdded -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                    isSelected -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                },
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            ForkBrandAvatar(
+                modelId = model.id,
+                displayName = model.displayName,
+                providerName = providerLabel,
+                size = 28.dp,
+                ringColor = when (health) {
+                    is ForkModelHealth.Status.Alive -> Color(0xFF34C759)
+                    is ForkModelHealth.Status.Dead -> MaterialTheme.colorScheme.error
+                    else -> null
+                },
+            )
             Spacer(Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -569,6 +563,7 @@ private fun CatalogRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            // Result, then the per-row probe button.
             when (health) {
                 is ForkModelHealth.Status.Alive -> Text(
                     "%.1fs".format(health.latencyMs / 1000.0),
@@ -588,8 +583,22 @@ private fun CatalogRow(
                     )
                 }
             }
+            // Per-row 测活. Its own IconButton so the tap does NOT toggle the
+            // row's selection — probing and picking are separate decisions.
+            IconButton(onClick = onProbe, modifier = Modifier.size(40.dp)) {
+                if (health is ForkModelHealth.Status.Running) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(
+                        Icons.Default.Bolt,
+                        contentDescription = stringResource(R.string.fork_health_check),
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
         }
-        Row(modifier = Modifier.padding(start = 30.dp)) {
+        Row(modifier = Modifier.padding(start = 68.dp)) {
             ForkModelCapabilityRow(model)
         }
     }

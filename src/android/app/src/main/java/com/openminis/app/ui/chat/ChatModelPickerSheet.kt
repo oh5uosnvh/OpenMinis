@@ -272,6 +272,8 @@ import com.openminis.app.data.repository.ChatRepository
 import com.openminis.app.data.repository.MemoryRepository
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.ui.browser.BrowserSheet
+import com.openminis.app.ui.settings.mods.ForkBottomSheet
+import com.openminis.app.ui.settings.mods.ForkSheetHandle
 import com.openminis.app.ui.theme.ChatColors
 import com.openminis.app.ui.components.MinisTextButton
 
@@ -343,9 +345,9 @@ internal fun ModelPickerSheet(
      */
     var quickTestEntry by remember { mutableStateOf<ModelEntry?>(null) }
 
-    // [FORK-MOD sticky-picker] Sheet state whose only exits are the Done button
-    // and the device back gesture — see the ModalBottomSheet call below.
-    val stickySheet = com.openminis.app.ui.settings.mods.rememberForkStickySheet(onDismiss)
+    // [FORK-MOD sticky-picker] Container state — see the ForkBottomSheet call
+    // below for why this is not a ModalBottomSheet.
+    val stickySheet = com.openminis.app.ui.settings.mods.rememberForkBottomSheetState()
 
     // Filtered groups
     val filteredGroups = remember(groups, searchText) {
@@ -387,53 +389,38 @@ internal fun ModelPickerSheet(
         result
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        // [FORK-MOD sticky-picker] Closes ONLY via the Done button or the device
-        // back gesture; scrim taps and swipe-down are vetoed.
-        //
-        // This is a list you scroll, search and read, and the default sheet
-        // behaviour makes every one of those a chance to lose it: a downward
-        // flick that begins on a row (rather than inside the list's own scroll
-        // range) is handed to the sheet's drag handler and dismisses it, and a
-        // tap a few pixels above the sheet hits the scrim and dismisses it too.
-        // What goes with it is not just the sheet — it is the search text and
-        // the scroll position.
-        //
-        // How one predicate covers it: material3 has exactly three dismissal
-        // routes. Scrim tap (`animateToDismiss`) and drag/fling
-        // (`settleToDismiss` → AnchoredDraggableState.settle) both consult
-        // `confirmValueChange(Hidden)` and abort/spring back on a veto; the back
-        // press goes through the dialog's own onDismissRequest, which calls
-        // hide() + onDismissRequest() UNCONDITIONALLY. So refusing Hidden blocks
-        // the first two and leaves back working — no back-handler needed here.
-        sheetState = stickySheet.state,
-        // Match the slim drag handle used by StandardChatSheet (6dp top / 4dp
-        // bottom) so the title sits flush with the indicator instead of the
-        // Material default's ~44dp whitespace gap above it.
-        dragHandle = {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 6.dp, bottom = 4.dp),
-                contentAlignment = Alignment.TopCenter,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .width(32.dp)
-                        .height(4.dp)
-                        .background(
-                            color = ChatColors.secondaryText.copy(alpha = 0.4f),
-                            shape = RoundedCornerShape(2.dp),
-                        ),
-                )
-            }
-        },
+    // [FORK-MOD sticky-picker] Rendered in the fork's own sheet container, NOT
+    // material3's ModalBottomSheet.
+    //
+    // This is a list you scroll, search and read, and the stock sheet makes every
+    // one of those a chance to lose it: a downward flick that begins on a row
+    // (rather than inside the list's own scroll range) is handed to the sheet's
+    // drag handler, and a tap a few pixels above the sheet hits the scrim. What
+    // goes with it is not just the sheet — it is the search text and the scroll
+    // position.
+    //
+    // A `confirmValueChange` veto was tried first and is NOT sufficient. It
+    // blocks the two dismissal paths that consult it (scrim tap, drag settle),
+    // but the sheet still MOVES: `onPostScroll` feeds unconsumed scroll straight
+    // to `dispatchRawDelta`, which assigns `offset` without asking anyone. The
+    // sheet slid, the finger lifted, settle() was vetoed, and it sprang back — a
+    // visible shudder the veto caused rather than prevented. material3 1.3.2 has
+    // no `sheetGesturesEnabled` to turn the drag surfaces off, so the container
+    // itself has to go. ForkBottomSheet is a Dialog with a bottom-aligned
+    // Surface: no AnchoredDraggableState, no nested-scroll interception, no
+    // offset to perturb. Back closes it (DialogProperties.dismissOnBackPress),
+    // scrim taps do not (dismissOnClickOutside = false), Done calls close().
+    ForkBottomSheet(
+        state = stickySheet,
+        onDismiss = onDismiss,
+        heightFraction = 0.9f,
     ) {
+        // Same slim handle the previous dragHandle drew (decorative here).
+        ForkSheetHandle()
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.9f)
+                .weight(1f)
                 // [T-android-model-picker-polish] navigationBarsPadding ALONE.
                 //
                 // This also carried a fixed `padding(bottom = 32.dp)`, so the

@@ -86,7 +86,7 @@ Git 三方合并对「在参数列表末尾加一行」几乎不会冲突；对�
 | `ui/settings/AddProviderScreen.kt` | Endpoint 段内新增自定义 UA 输入；Key 输入改明文换行；保存时写入 UA + 手动标记，去掉自动全量拉取 | 修上游「添加时没有 UA、添加完才冒出来」的反人类逻辑 |
 | `ui/settings/SettingsComponents.kt` | `SettingsScaffold` 加 `bottomBar` 参数（带默认值） | 底部 Tab 的唯一挂钩点 |
 | `ui/navigation/AppNavigation.kt` | `PROVIDER_DETAIL` 路由改指向 `ProviderDetailTabbedScreen` | 1 处 |
-| `ui/chat/ChatModelPickerSheet.kt` | `sheetState` 换成 `rememberForkStickySheet`，完成按钮走 `close()` | 面板只按显式操作收起，3 处 |
+| `ui/chat/ChatModelPickerSheet.kt` | `ModalBottomSheet` 换成 `ForkBottomSheet`，完成按钮走 `close()` | 面板不再被滑动/点遮罩收起，也不会被滑动带着晃 |
 | `data/repository/ProviderRepository.kt` | `autoRefreshModels` 开头加手动策略跳过 | 防止后台刷新回灌全部模型 |
 
 **fork 独有的新文件（零冲突）：**
@@ -96,11 +96,15 @@ Git 三方合并对「在参数列表末尾加一行」几乎不会冲突；对�
 - `ui/settings/mods/ProviderModelsTab.kt` —— kelive 风格模型管理页 + 底部操作栏 + 共享 controller
 - `ui/settings/mods/ProviderModelsFetchSheet.kt` —— 获取模型面板（厂商分组 / 全选 / 测活）
 - `ui/settings/mods/ProviderCatalogFetcher.kt` —— 只读目录抓取（fetch 与写入分离）
-- `ui/settings/mods/ForkModelFamily.kt` —— 按 id 归类厂商/系列的有序规则表
-- `ui/settings/mods/ForkModelHealth.kt` —— 批量测活（并发上限 / 超时 / 可取消）
+- `ui/settings/mods/ForkModelFamily.kt` —— 按 id 归类厂商/系列的有序规则表（照 kelivo `ModelGrouping`）
+- `ui/settings/mods/ForkBrandIcons.kt` —— model id → 厂商图标的有序规则表（照 kelivo `BrandAssets`）
+- `ui/settings/mods/ForkModelHealth.kt` —— 测活（并发上限 / 超时 / 可取消）
 - `ui/settings/mods/ForkSwipeToRemoveRow.kt` —— 左滑移除 + 状态外提的 `ForkSwipeOpenState`
-- `ui/settings/mods/ForkStickySheet.kt` —— 只按显式操作收起的 ModalBottomSheet 状态
+- `ui/settings/mods/ForkBottomSheet.kt` —— 无拖拽面的 Dialog 式底部面板
 - `ui/settings/mods/ForkModelPolicy.kt` —— 「此服务商模型由用户手动管理」标记
+- `res/drawable/fork_brand_*.xml` —— 37 个厂商图标，由 `scripts/fork/fetch-brand-icons.sh` 从
+  **lobehub/lobe-icons（MIT）** 生成。**不是**从 kelivo 拷的：kelivo 是 AGPL-3.0，本 fork 是
+  GPL-3.0，它的资源不可直接取用；抄的是它的做法，图标取自同一套图标集的上游
 - `res/values*/strings_fork.xml` —— fork 专属文案，**不碰上游 strings.xml**
 - `.github/workflows/*.yml`、`scripts/fork/*`、`docs/FORK.md`
 

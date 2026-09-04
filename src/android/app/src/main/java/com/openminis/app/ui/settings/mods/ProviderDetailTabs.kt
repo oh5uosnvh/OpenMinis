@@ -1,6 +1,7 @@
 package com.openminis.app.ui.settings.mods
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,10 +27,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.openminis.app.R
 import com.openminis.app.data.model.normalizeModalities
 
@@ -145,6 +150,65 @@ private fun TabItem(
 }
 
 /**
+ * [FORK] Brand avatar for a model row — a circular tinted disc holding the
+ * vendor logo, or the model's initial letter when no logo matches.
+ *
+ * Port of kelivo's `_BrandAvatar` (provider_detail_page.dart): same circle,
+ * same primary-tinted background, same initial-letter fallback, same
+ * monochrome-logo tinting for dark surfaces.
+ */
+@Composable
+fun ForkBrandAvatar(
+    modelId: String?,
+    displayName: String? = null,
+    providerName: String? = null,
+    size: Dp = 28.dp,
+    /**
+     * Optional status ring colour — the 模型 tab uses it to show 测活 results
+     * without adding a second glyph to an already busy row.
+     */
+    ringColor: Color? = null,
+) {
+    val res = ForkBrandIcons.forModel(modelId, displayName, providerName)
+    val bg = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+    Box(
+        modifier = Modifier
+            .size(size)
+            .background(bg, CircleShape)
+            .then(
+                if (ringColor != null) {
+                    Modifier.border(1.5.dp, ringColor, CircleShape)
+                } else {
+                    Modifier
+                },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (res != null) {
+            Icon(
+                painter = painterResource(res),
+                contentDescription = null,
+                // A full-colour logo must be drawn as-is; a single-colour
+                // silhouette has to be tinted or it vanishes on a dark surface.
+                tint = if (ForkBrandIcons.isMonochrome(res)) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    Color.Unspecified
+                },
+                modifier = Modifier.size(size * 0.62f),
+            )
+        } else {
+            Text(
+                text = (modelId ?: displayName ?: "?").trim().take(1).uppercase(),
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = (size.value * 0.42f).sp,
+            )
+        }
+    }
+}
+
+/**
  * [FORK] Small pill used on model rows for capability tags (chat / think /
  * img / audio …). Same visual recipe as upstream's `ModalityBadge` so the two
  * lists don't read as different apps, but declared here to keep the fork's
@@ -203,7 +267,10 @@ fun ForkModelCapabilityRow(model: com.openminis.app.data.model.LLMModel) {
     }
 }
 
-/** Provider accent dot, matching upstream's palette. */
+/**
+ * [FORK] Provider accent dot. Kept for the places that want a minimal marker
+ * rather than a full brand avatar.
+ */
 @Composable
 fun ForkProviderDot(providerType: com.openminis.app.data.model.ProviderType?) {
     Box(

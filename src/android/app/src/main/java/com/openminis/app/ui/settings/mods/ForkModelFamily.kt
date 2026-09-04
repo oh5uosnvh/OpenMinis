@@ -4,7 +4,11 @@ import com.openminis.app.data.model.LLMModel
 
 /**
  * [FORK] Groups a flat model catalog into vendor / family sections, the way
- * kelive's 获取模型 screen does (Claude Opus, GPT, Gemini …).
+ * kelivo's 获取模型 screen does (Claude Opus, GPT, Gemini …).
+ *
+ * Ported from kelivo's `ModelGrouping.groupFor` (lib/utils/model_grouping.dart):
+ * same id-substring approach, same family names, extended with the vendors that
+ * list does not cover.
  *
  * ## Why classify by id rather than trusting the API
  *
@@ -26,7 +30,7 @@ object ForkModelFamily {
     /** One family bucket. [order] drives section order; lower shows first. */
     data class Family(val key: String, val displayName: String, val order: Int)
 
-    private val OTHER = Family("other", "其他", 9_000)
+    private val OTHER = Family("other", "其他模型", 9_000)
 
     /**
      * id-substring → family. Checked in declaration order, so put the more
@@ -39,39 +43,44 @@ object ForkModelFamily {
     private data class Rule(val match: List<String>, val family: Family)
 
     private val rules: List<Rule> = listOf(
-        // ── Anthropic ────────────────────────────────────────────────────
+        // ── Anthropic — kelivo splits Claude by tier, not only by version ──
         Rule(listOf("claude-opus", "opus-4", "opus-5"), Family("claude-opus", "Claude Opus", 100)),
         Rule(listOf("claude-sonnet", "sonnet-4", "sonnet-5"), Family("claude-sonnet", "Claude Sonnet", 101)),
         Rule(listOf("claude-haiku", "haiku-4", "haiku-5"), Family("claude-haiku", "Claude Haiku", 102)),
-        Rule(listOf("claude", "anthropic"), Family("claude", "Claude", 103)),
+        Rule(listOf("claude-4"), Family("claude-4", "Claude 4", 103)),
+        Rule(listOf("claude-3.5"), Family("claude-35", "Claude 3.5", 104)),
+        Rule(listOf("claude-3"), Family("claude-3", "Claude 3", 105)),
+        Rule(listOf("claude", "anthropic"), Family("claude", "Claude", 106)),
 
         // ── OpenAI ───────────────────────────────────────────────────────
         // Image / audio generators first: they are gpt-* too, but grouping them
         // with the chat models makes the chat section lie about its contents.
-        Rule(listOf("gpt-image", "dall-e", "dalle"), Family("openai-image", "OpenAI 图像", 200)),
-        Rule(listOf("whisper", "gpt-4o-transcribe", "-transcribe"), Family("openai-audio-in", "OpenAI 语音识别", 201)),
-        Rule(listOf("tts-1", "gpt-4o-mini-tts", "-tts"), Family("openai-audio-out", "OpenAI 语音合成", 202)),
+        Rule(listOf("gpt-image", "dall-e", "dalle", "sora"), Family("openai-image", "OpenAI 图像", 200)),
+        Rule(listOf("whisper", "-transcribe"), Family("openai-audio-in", "OpenAI 语音识别", 201)),
+        Rule(listOf("tts-1", "-tts"), Family("openai-audio-out", "OpenAI 语音合成", 202)),
         Rule(listOf("codex"), Family("codex", "Codex", 203)),
         Rule(listOf("gpt-5", "gpt5"), Family("gpt-5", "GPT-5", 204)),
         Rule(listOf("gpt-4", "gpt4"), Family("gpt-4", "GPT-4", 205)),
         Rule(listOf("gpt-3", "gpt3"), Family("gpt-3", "GPT-3", 206)),
         Rule(listOf("o1", "o3", "o4-"), Family("openai-o", "OpenAI o 系列", 207)),
-        Rule(listOf("gpt-", "chatgpt"), Family("gpt", "GPT", 208)),
+        Rule(listOf("gpt", "chatgpt"), Family("gpt", "GPT", 208)),
 
-        // ── Google ───────────────────────────────────────────────────────
-        Rule(listOf("gemini-3", "gemini-2.5", "gemini-2"), Family("gemini", "Gemini", 300)),
-        Rule(listOf("gemini", "imagen", "veo"), Family("google", "Google", 301)),
-        Rule(listOf("gemma"), Family("gemma", "Gemma", 302)),
+        // ── Google — kelivo splits Gemini by generation ───────────────────
+        Rule(listOf("gemma"), Family("gemma", "Gemma", 300)),
+        Rule(listOf("gemini-3"), Family("gemini-3", "Gemini 3", 301)),
+        Rule(listOf("gemini-2.5"), Family("gemini-25", "Gemini 2.5", 302)),
+        Rule(listOf("gemini"), Family("gemini", "Gemini", 303)),
+        Rule(listOf("imagen", "veo"), Family("google", "Google", 304)),
 
         // ── xAI ──────────────────────────────────────────────────────────
-        Rule(listOf("grok"), Family("grok", "Grok", 400)),
+        Rule(listOf("grok", "xai"), Family("grok", "Grok", 400)),
 
         // ── China mainland vendors ───────────────────────────────────────
         Rule(listOf("deepseek"), Family("deepseek", "DeepSeek", 500)),
-        Rule(listOf("qwen", "qwq", "tongyi"), Family("qwen", "Qwen 通义", 501)),
+        Rule(listOf("qwen", "qwq", "qvq", "dashscope", "tongyi"), Family("qwen", "Qwen", 501)),
         Rule(listOf("kimi", "moonshot"), Family("kimi", "Kimi", 502)),
-        Rule(listOf("glm", "chatglm", "zhipu"), Family("glm", "GLM 智谱", 503)),
-        Rule(listOf("doubao", "ep-", "seed-"), Family("doubao", "豆包", 504)),
+        Rule(listOf("glm", "chatglm", "zhipu"), Family("glm", "GLM", 503)),
+        Rule(listOf("doubao", "volc", "ark-", "seed-"), Family("doubao", "Doubao", 504)),
         Rule(listOf("hunyuan"), Family("hunyuan", "混元", 505)),
         Rule(listOf("ernie", "wenxin"), Family("ernie", "文心", 506)),
         Rule(listOf("minimax", "abab"), Family("minimax", "MiniMax", 507)),
@@ -80,6 +89,7 @@ object ForkModelFamily {
         Rule(listOf("yi-"), Family("yi", "零一万物 Yi", 510)),
         Rule(listOf("baichuan"), Family("baichuan", "百川", 511)),
         Rule(listOf("mimo"), Family("mimo", "MiMo", 512)),
+        Rule(listOf("kat"), Family("kat", "KAT", 513)),
 
         // ── Open weights / others ────────────────────────────────────────
         Rule(listOf("llama"), Family("llama", "Llama", 600)),
@@ -88,9 +98,12 @@ object ForkModelFamily {
         Rule(listOf("phi-"), Family("phi", "Phi", 603)),
         Rule(listOf("nemotron", "nvidia"), Family("nvidia", "NVIDIA", 604)),
         Rule(listOf("perplexity", "sonar"), Family("perplexity", "Perplexity", 605)),
-        Rule(listOf("embed", "bge-", "text-embedding"), Family("embedding", "向量模型", 700)),
-        Rule(listOf("rerank"), Family("rerank", "重排模型", 701)),
-        Rule(listOf("flux", "stable-diffusion", "sd3", "midjourney"), Family("image-gen", "图像生成", 702)),
+        Rule(listOf("flux", "stable-diffusion", "sd3", "midjourney"), Family("image-gen", "图像生成", 700)),
+        // kelivo puts embeddings in their own bucket at the end — they are never
+        // chat targets, so keeping them next to chat models only lengthens the
+        // list to scan.
+        Rule(listOf("embed", "bge-", "text-embedding"), Family("embedding", "嵌入模型", 800)),
+        Rule(listOf("rerank"), Family("rerank", "重排模型", 801)),
     )
 
     /** Classify one model. Never returns null — unmatched ids land in 其他. */
