@@ -88,6 +88,22 @@ fun ProviderDetailScreen(
     onModelEntryClick: (String) -> Unit = {},
     onAddCustomModel: () -> Unit = {},
     onVoiceServiceClick: (String) -> Unit = {},
+    // ── [FORK-HOOK provider-tabs] ────────────────────────────────────────
+    // The fork splits this screen into two fixed bottom tabs (配置 / 模型,
+    // kelive-style), so the model list must be renderable from the OTHER tab
+    // instead of being welded to the bottom of the config page. Both knobs are
+    // defaulted to the upstream behaviour, so upstream callers — and any new
+    // call site an upstream update adds — compile and behave unchanged.
+    //
+    // Deliberately parameters rather than a rewrite: adding a defaulted
+    // parameter at the END of the list is the one edit shape git三方合并
+    // basically never conflicts on. See docs/FORK.md §3 规则 2.
+    showModelsSection: Boolean = true,
+    /** Extra content appended after the credential/endpoint sections. */
+    bottomBar: @Composable (() -> Unit)? = null,
+    /** Back arrow suppression — the tab host owns navigation when non-null. */
+    showBackArrow: Boolean = true,
+    title: String? = null,
 ) {
     val config by providerRepository.config.collectAsState()
     val instance = config.instances.find { it.id == instanceId }
@@ -122,7 +138,8 @@ fun ProviderDetailScreen(
     var storedKey by remember(instanceId) { mutableStateOf(providerRepository.loadApiKey(instanceId) ?: "") }
     var isEditingKey by remember { mutableStateOf(false) }
     var editKeyValue by remember { mutableStateOf("") }
-    var keyVisible by remember { mutableStateOf(false) }
+    // [FORK-MOD apikey-plaintext] No `keyVisible` state: the key is always
+    // shown in full (see ApiKeyCredentialBlock for the reasoning).
 
     var isEnabled by remember { mutableStateOf(instance.isEnabled) }
     var customBaseURL by remember { mutableStateOf(instance.customBaseURL ?: "") }
@@ -137,8 +154,11 @@ fun ProviderDetailScreen(
     val exportContext = androidx.compose.ui.platform.LocalContext.current
 
     SettingsScaffold(
-        title = instance.label,
-        onBack = onBack,
+        // [FORK-HOOK provider-tabs] title/back are overridable so the tab host
+        // can own the top bar; defaults reproduce upstream exactly.
+        title = title ?: instance.label,
+        onBack = if (showBackArrow) onBack else null,
+        bottomBar = bottomBar,
         actions = {
             IconButton(onClick = {
                 AppLogger.info(TAG, "Export instance ${instance.id} (${instance.label})")
@@ -193,8 +213,6 @@ fun ProviderDetailScreen(
                 } else {
                     ApiKeyCredentialBlock(
                         storedKey = storedKey,
-                        keyVisible = keyVisible,
-                        onToggleVisibility = { keyVisible = !keyVisible },
                         isEditing = isEditingKey,
                         editValue = editKeyValue,
                         onEditValueChange = { editKeyValue = it },
@@ -205,7 +223,6 @@ fun ProviderDetailScreen(
                         onCancelEdit = {
                             isEditingKey = false
                             editKeyValue = ""
-                            keyVisible = false
                         },
                         onSave = {
                             providerRepository.saveApiKey(instanceId, editKeyValue)
@@ -216,7 +233,6 @@ fun ProviderDetailScreen(
                             AppLogger.info(TAG, "Saved API key for ${instance.id}")
                             isEditingKey = false
                             editKeyValue = ""
-                            keyVisible = false
                         },
                     )
                 }
@@ -525,6 +541,10 @@ fun ProviderDetailScreen(
         ThinkingRulesSection(instance = instance, providerRepository = providerRepository)
 
         // ─── Models ─────────────────────────────────────────────────
+        // [FORK-HOOK provider-tabs] Gated: in the fork the model list lives in
+        // the "模型" tab (ProviderModelsScreen), not appended to the config
+        // page. Default true = upstream layout.
+        if (showModelsSection) {
         SettingsSection(
             header = stringResource(R.string.provider_detail_models_count_header, entries.size),
         ) {
@@ -718,6 +738,7 @@ fun ProviderDetailScreen(
         ) {
             Text(stringResource(R.string.provider_detail_add_custom_model))
         }
+        } // [FORK-HOOK provider-tabs] end if (showModelsSection)
 
         // [T-android-delete-provider-button-height] The "Delete provider" button
         // uses the same default 48dp MinisButtonHeight as "Add custom model"
@@ -924,8 +945,6 @@ private fun OAuthCredentialBlock(
 @Composable
 private fun ApiKeyCredentialBlock(
     storedKey: String,
-    keyVisible: Boolean,
-    onToggleVisibility: () -> Unit,
     isEditing: Boolean,
     editValue: String,
     onEditValueChange: (String) -> Unit,
@@ -933,31 +952,48 @@ private fun ApiKeyCredentialBlock(
     onCancelEdit: () -> Unit,
     onSave: () -> Unit,
 ) {
+    // [FORK-MOD apikey-plaintext] The key is shown IN FULL, wrapped over as
+    // many lines as it needs, in both the display and the edit state.
+    //
+    // Upstream masked it (maskedKey → "sk-abc...7f9d") behind an eye toggle. On
+    // a phone that is a net loss: the value being hidden is one the user just
+    // pasted from a provider console and routinely has to eyeball against it
+    // ("did the paste truncate?", "is this the relay key or the official
+    // one?"), and PasswordVisualTransformation on a single-line field made even
+    // the unmasked state a horizontally-scrolling one-liner nobody can read.
+    // The threat model does not justify it either — this is a per-app settings
+    // page behind the device lock, not a shared screen.
+    //
+    // singleLine = false + no VisualTransformation is what makes it wrap; the
+    // monospace style keeps character boundaries legible for comparison.
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val copiedToast = stringResource(R.string.provider_detail_key_copied)
+
+    fun copyToClipboard(value: String) {
+        if (value.isEmpty()) return
+        clipboard.setText(androidx.compose.ui.text.AnnotatedString(value))
+        android.widget.Toast.makeText(context, copiedToast, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
     if (isEditing) {
         SectionTextField(
             value = editValue,
             onValueChange = onEditValueChange,
-            singleLine = true,
-            visualTransformation = if (keyVisible) {
-                VisualTransformation.None
-            } else {
-                PasswordVisualTransformation()
-            },
-            trailingIcon = {
-                IconButton(onClick = onToggleVisibility) {
-                    Icon(
-                        if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                        contentDescription = if (keyVisible) "Hide" else "Show",
-                    )
-                }
-            },
+            singleLine = false,
+            textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
             fieldModifier = Modifier.bringIntoViewOnFocus(),
         )
-        Row(modifier = Modifier.padding(top = 8.dp)) {
-            // [T-android-settings-ui-md3] #4 + #12 Cancel is the SECONDARY action:
-            // a neutral outlined pill (onSurfaceVariant content/border), forming
-            // the standard MD3 outlined-vs-filled pair with the filled Save below.
-            // Previously a primary-teal text button — indistinguishable from Save.
+        // [FORK-MOD apikey-plaintext] Button order is fixed: 取消 · 复制 · 保存.
+        // Copy sits in the MIDDLE, and copies what is currently in the field
+        // (not the stored value) — while editing, the draft is what the user
+        // cares about, and copying the pre-edit value would be a silent
+        // mismatch. Cancel keeps upstream's neutral-outlined treatment, Copy is
+        // outlined too so the filled Save stays the single primary action.
+        Row(
+            modifier = Modifier.padding(top = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             MinisSmallOutlinedButton(
                 onClick = onCancelEdit,
                 colors = ButtonDefaults.outlinedButtonColors(
@@ -968,25 +1004,51 @@ private fun ApiKeyCredentialBlock(
                 Text(stringResource(R.string.common_cancel))
             }
             Spacer(modifier = Modifier.width(8.dp))
+            MinisSmallOutlinedButton(
+                onClick = { copyToClipboard(editValue) },
+                enabled = editValue.isNotEmpty(),
+            ) {
+                Text(stringResource(R.string.common_copy))
+            }
+            Spacer(modifier = Modifier.width(8.dp))
             MinisSmallButton(onClick = onSave, enabled = editValue.isNotBlank()) {
                 Text(stringResource(R.string.provider_detail_save_key))
             }
         }
     } else {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = if (keyVisible) storedKey else maskedKey(storedKey),
-                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                modifier = Modifier.weight(1f),
-            )
-            IconButton(onClick = onToggleVisibility) {
-                Icon(
-                    if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                    contentDescription = if (keyVisible) "Hide" else "Show",
+        Column {
+            // Full key, wrapped. selectable so a long-press still offers the
+            // system copy affordance in addition to the button below.
+            androidx.compose.foundation.text.selection.SelectionContainer {
+                Text(
+                    text = if (storedKey.isEmpty()) {
+                        stringResource(R.string.provider_detail_key_not_set)
+                    } else {
+                        storedKey
+                    },
+                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                    color = if (storedKey.isEmpty()) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
-            MinisSmallTextButton(onClick = onBeginEdit) {
-                Text(stringResource(R.string.common_edit))
+            Row(
+                modifier = Modifier.padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                MinisSmallOutlinedButton(
+                    onClick = { copyToClipboard(storedKey) },
+                    enabled = storedKey.isNotEmpty(),
+                ) {
+                    Text(stringResource(R.string.common_copy))
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                MinisSmallButton(onClick = onBeginEdit) {
+                    Text(stringResource(R.string.common_edit))
+                }
             }
         }
     }

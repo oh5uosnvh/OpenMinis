@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FORK-ONLY string resources.
+
+  Kept in a SEPARATE file from strings.xml on purpose: Android merges every
+  values/*.xml at build time, so the fork can add copy without ever touching
+  the file upstream edits on nearly every release. Zero merge-conflict surface.
+  See docs/FORK.md §3.
+-->
+<resources>
+    <!-- Provider detail — bottom tabs -->
+    <string name="fork_tab_config">Config</string>
+    <string name="fork_tab_models">Models</string>
+
+    <!-- API key block -->
+    <string name="provider_detail_key_copied">Copied to clipboard</string>
+    <string name="provider_detail_key_not_set">Not set</string>
+
+    <!-- Models tab -->
+    <string name="fork_models_title">Models</string>
+    <string name="fork_models_fetch">Fetch Models</string>
+    <string name="fork_models_add_custom">Add Manually</string>
+    <string name="fork_models_search_placeholder">Search models</string>
+    <string name="fork_models_clear_search">Clear search</string>
+    <string name="fork_models_count">%1$d models</string>
+    <string name="fork_models_count_filtered">%1$d / %2$d models</string>
+    <string name="fork_models_empty">No models yet. Tap “Fetch Models” to pull the provider catalog and pick the ones you want, or add one manually.</string>
+    <string name="fork_models_empty_search">No model matches “%1$s”.</string>
+    <string name="fork_models_enabled">Enabled</string>
+    <string name="fork_models_hidden_badge">Hidden</string>
+
+    <!-- Fetch sheet -->
+    <string name="fork_fetch_title">Fetch Models</string>
+    <string name="fork_fetch_subtitle">Pick the models to add. Nothing is added until you confirm.</string>
+    <string name="fork_fetch_loading">Fetching from provider…</string>
+    <string name="fork_fetch_retry">Retry</string>
+    <string name="fork_fetch_failed">Fetch failed: %1$s</string>
+    <string name="fork_fetch_empty">The provider returned no models.</string>
+    <string name="fork_fetch_select_all">Select all</string>
+    <string name="fork_fetch_clear_selection">Clear</string>
+    <string name="fork_fetch_add_selected">Add %1$d selected</string>
+    <string name="fork_fetch_add_none">Add</string>
+    <string name="fork_fetch_already_added">Added</string>
+    <string name="fork_fetch_added_toast">Added %1$d model(s)</string>
+    <string name="fork_fetch_found">Found %1$d models</string>
+
+    <!-- Capability chips -->
+    <string name="fork_chip_chat">chat</string>
+    <string name="fork_chip_reasoning">think</string>
+
+    <!-- Add provider -->
+    <string name="fork_add_provider_ua_footer">Some gateways reject the default User-Agent and only accept official clients. Leave blank unless your endpoint requires a specific one.</string>
+</resources>

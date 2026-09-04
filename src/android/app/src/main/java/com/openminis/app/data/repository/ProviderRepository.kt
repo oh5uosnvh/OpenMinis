@@ -2311,6 +2311,19 @@ class ProviderRepository(private val context: Context) {
      * so we never overwrite hand-edited entries. Mirrors iOS `autoRefreshModels(for:)`.
      */
     private suspend fun autoRefreshModels(instance: ProviderInstance) {
+        // [FORK-HOOK manual-models] Instances created by the fork manage their
+        // model list by hand (获取模型 + 勾选). A background refresh here would
+        // call replaceEntries and swap the user's picks for the endpoint's whole
+        // catalog — silently, a day after they curated it. Same intent as the
+        // hasCustom skip immediately below, extended to instances that are
+        // user-curated but not yet populated. See ForkModelPolicy.
+        if (com.openminis.app.ui.settings.mods.ForkModelPolicy.isManual(context, instance.id)) {
+            android.util.Log.i(
+                "ProviderRepo",
+                "[ModelList] autoRefresh SKIP ${instance.label} — fork manual model policy",
+            )
+            return
+        }
         val hasCustom = _config.value.modelEntries.any {
             it.providerInstanceId == instance.id && it.isCustom
         }

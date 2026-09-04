@@ -875,7 +875,11 @@ fun AppNavigation(
             arguments = listOf(navArgument("instanceId") { type = NavType.StringType }),
         ) { backStackEntry ->
             val instanceId = backStackEntry.arguments?.getString("instanceId") ?: return@composable
-            ProviderDetailScreen(
+            // [FORK-HOOK provider-tabs] Route points at the fork's tabbed host
+            // instead of ProviderDetailScreen directly. The host renders the
+            // upstream screen for the 配置 tab, so this is the ONLY line the
+            // fork changes in this file. See docs/FORK.md §3.
+            com.openminis.app.ui.settings.mods.ProviderDetailTabbedScreen(
                 instanceId = instanceId,
                 providerRepository = providerRepository,
                 onBack = { navController.safePopBackStack() },
