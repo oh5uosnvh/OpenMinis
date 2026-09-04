@@ -343,6 +343,10 @@ internal fun ModelPickerSheet(
      */
     var quickTestEntry by remember { mutableStateOf<ModelEntry?>(null) }
 
+    // [FORK-MOD sticky-picker] Sheet state whose only exits are the Done button
+    // and the device back gesture — see the ModalBottomSheet call below.
+    val stickySheet = com.openminis.app.ui.settings.mods.rememberForkStickySheet(onDismiss)
+
     // Filtered groups
     val filteredGroups = remember(groups, searchText) {
         if (searchText.isEmpty()) groups
@@ -385,7 +389,25 @@ internal fun ModelPickerSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        // [FORK-MOD sticky-picker] Closes ONLY via the Done button or the device
+        // back gesture; scrim taps and swipe-down are vetoed.
+        //
+        // This is a list you scroll, search and read, and the default sheet
+        // behaviour makes every one of those a chance to lose it: a downward
+        // flick that begins on a row (rather than inside the list's own scroll
+        // range) is handed to the sheet's drag handler and dismisses it, and a
+        // tap a few pixels above the sheet hits the scrim and dismisses it too.
+        // What goes with it is not just the sheet — it is the search text and
+        // the scroll position.
+        //
+        // How one predicate covers it: material3 has exactly three dismissal
+        // routes. Scrim tap (`animateToDismiss`) and drag/fling
+        // (`settleToDismiss` → AnchoredDraggableState.settle) both consult
+        // `confirmValueChange(Hidden)` and abort/spring back on a veto; the back
+        // press goes through the dialog's own onDismissRequest, which calls
+        // hide() + onDismissRequest() UNCONDITIONALLY. So refusing Hidden blocks
+        // the first two and leaves back working — no back-handler needed here.
+        sheetState = stickySheet.state,
         // Match the slim drag handle used by StandardChatSheet (6dp top / 4dp
         // bottom) so the title sits flush with the indicator instead of the
         // Material default's ~44dp whitespace gap above it.
@@ -437,7 +459,11 @@ internal fun ModelPickerSheet(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-                    MinisTextButton(onClick = onDismiss) {
+                    // [FORK-MOD sticky-picker] Done must go through the sticky
+                    // state's close(), which lifts the Hidden veto BEFORE
+                    // animating away. Calling onDismiss directly would drop the
+                    // sheet without its exit animation.
+                    MinisTextButton(onClick = { stickySheet.close() }) {
                         Text(stringResource(R.string.model_picker_done))
                     }
                 }

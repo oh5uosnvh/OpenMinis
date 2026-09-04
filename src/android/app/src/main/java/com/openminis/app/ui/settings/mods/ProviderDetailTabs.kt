@@ -54,7 +54,18 @@ enum class ProviderDetailTab {
 fun ProviderDetailBottomTabs(
     selected: ProviderDetailTab,
     onSelect: (ProviderDetailTab) -> Unit,
+    /**
+     * When false, render ONLY the tab row — no Surface, no hairline. The 模型
+     * tab nests this inside a taller footer (action bar + tabs) that supplies
+     * its own surface and divider; drawing them twice produced a double rule and
+     * stacked tonal elevation.
+     */
+    chrome: Boolean = true,
 ) {
+    if (!chrome) {
+        TabRow(selected = selected, onSelect = onSelect)
+        return
+    }
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         // Hairline above the bar so it reads as chrome separated from the
@@ -68,29 +79,37 @@ fun ProviderDetailBottomTabs(
                     .height(0.5.dp)
                     .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
             )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TabItem(
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.Filled.Settings,
-                    label = stringResource(R.string.fork_tab_config),
-                    selected = selected == ProviderDetailTab.CONFIG,
-                    onClick = { onSelect(ProviderDetailTab.CONFIG) },
-                )
-                TabItem(
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.Filled.Layers,
-                    label = stringResource(R.string.fork_tab_models),
-                    selected = selected == ProviderDetailTab.MODELS,
-                    onClick = { onSelect(ProviderDetailTab.MODELS) },
-                )
-            }
+            TabRow(selected = selected, onSelect = onSelect)
         }
+    }
+}
+
+@Composable
+private fun TabRow(
+    selected: ProviderDetailTab,
+    onSelect: (ProviderDetailTab) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        TabItem(
+            modifier = Modifier.weight(1f),
+            icon = Icons.Filled.Settings,
+            label = stringResource(R.string.fork_tab_config),
+            selected = selected == ProviderDetailTab.CONFIG,
+            onClick = { onSelect(ProviderDetailTab.CONFIG) },
+        )
+        TabItem(
+            modifier = Modifier.weight(1f),
+            icon = Icons.Filled.Layers,
+            label = stringResource(R.string.fork_tab_models),
+            selected = selected == ProviderDetailTab.MODELS,
+            onClick = { onSelect(ProviderDetailTab.MODELS) },
+        )
     }
 }
 

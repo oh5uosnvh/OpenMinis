@@ -25,6 +25,7 @@
     <!-- 获取模型面板 -->
     <string name="fork_fetch_title">获取模型</string>
     <string name="fork_fetch_subtitle">勾选要添加的模型，确认后才会写入。</string>
+    <string name="fork_fetch_close">关闭</string>
     <string name="fork_fetch_loading">正在从服务商获取…</string>
     <string name="fork_fetch_retry">重试</string>
     <string name="fork_fetch_failed">获取失败：%1$s</string>
@@ -40,6 +41,11 @@
     <!-- 能力标签 -->
     <string name="fork_chip_chat">聊天</string>
     <string name="fork_chip_reasoning">思考</string>
+
+    <!-- 测活 -->
+    <string name="fork_health_check">测活</string>
+    <string name="fork_health_stop">停止</string>
+    <string name="fork_health_dead">不可用</string>
 
     <!-- 添加服务商 -->
     <string name="fork_add_provider_ua_footer">部分网关会拒绝默认 User-Agent，只放行官方客户端。除非你的端点有要求，留空即可。</string>

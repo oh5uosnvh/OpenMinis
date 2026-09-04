@@ -32,6 +32,7 @@
     <!-- Fetch sheet -->
     <string name="fork_fetch_title">Fetch Models</string>
     <string name="fork_fetch_subtitle">Pick the models to add. Nothing is added until you confirm.</string>
+    <string name="fork_fetch_close">Close</string>
     <string name="fork_fetch_loading">Fetching from provider…</string>
     <string name="fork_fetch_retry">Retry</string>
     <string name="fork_fetch_failed">Fetch failed: %1$s</string>
@@ -47,6 +48,11 @@
     <!-- Capability chips -->
     <string name="fork_chip_chat">chat</string>
     <string name="fork_chip_reasoning">think</string>
+
+    <!-- Health check (测活) -->
+    <string name="fork_health_check">Test</string>
+    <string name="fork_health_stop">Stop</string>
+    <string name="fork_health_dead">failed</string>
 
     <!-- Add provider -->
     <string name="fork_add_provider_ua_footer">Some gateways reject the default User-Agent and only accept official clients. Leave blank unless your endpoint requires a specific one.</string>

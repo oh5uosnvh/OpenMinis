@@ -1,13 +1,22 @@
 package com.openminis.app.ui.settings.mods
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import com.openminis.app.data.repository.ProviderRepository
 import com.openminis.app.ui.settings.ProviderDetailScreen
 import com.openminis.app.ui.settings.SettingsScaffold
@@ -26,7 +35,9 @@ import com.openminis.app.ui.settings.SettingsScaffold
  *              endpoint, API format, Azure, image endpoint, status, voice,
  *              thinking rules) keeps upstream's behaviour, including future
  *              additions — we do not re-implement that page, we host it.
- *   模型 tab → [ProviderModelsTabContent], the fork's kelive-style list.
+ *   模型 tab → [ProviderModelsTabContent] (list) + [ProviderModelsActionBar]
+ *              (获取模型 / 手动添加 / 测活), the latter pinned above the tab
+ *              strip so it stays reachable however far the list is scrolled.
  *
  * Why reuse rather than fork the config page: it is 1200 lines that upstream
  * edits nearly every release. Hosting it means an upstream change to any
@@ -47,14 +58,36 @@ fun ProviderDetailTabbedScreen(
     // on the tab they were reading.
     var tab by rememberSaveable { mutableStateOf(ProviderDetailTab.CONFIG) }
 
-    // On the 模型 tab, system back returns to 配置 first rather than leaving the
-    // provider entirely — matches how the two tabs read as one screen.
-    BackHandler(enabled = tab == ProviderDetailTab.MODELS) {
-        tab = ProviderDetailTab.CONFIG
+    // Created HERE, not inside the tab: the list and the action bar are rendered
+    // into different scaffold slots (content vs bottomBar) and must share state.
+    // Hoisting it also means a finished 测活 run's results survive a hop to 配置
+    // and back.
+    val modelsController = rememberProviderModelsController()
+
+    // Back semantics, in priority order:
+    //  1. swipe-open rows → put them back (a destructive button is visible; the
+    //     user's most likely intent is "undo that reveal", not "leave").
+    //  2. on 模型 → return to 配置 first; the two tabs read as one screen.
+    //  3. otherwise fall through to the navigation pop.
+    BackHandler(
+        enabled = tab == ProviderDetailTab.MODELS || modelsController.swipeState.hasOpen,
+    ) {
+        when {
+            modelsController.swipeState.hasOpen -> modelsController.swipeState.closeAll()
+            else -> tab = ProviderDetailTab.CONFIG
+        }
     }
 
-    val bottomBar: @Composable () -> Unit = {
-        ProviderDetailBottomTabs(selected = tab, onSelect = { tab = it })
+    val tabStrip: @Composable () -> Unit = {
+        ProviderDetailBottomTabs(
+            selected = tab,
+            onSelect = { next ->
+                // Leaving 模型 with rows held open would strand them open on
+                // return; reset so the tab is always entered in a clean state.
+                if (next != tab) modelsController.swipeState.closeAll()
+                tab = next
+            },
+        )
     }
 
     when (tab) {
@@ -66,7 +99,7 @@ fun ProviderDetailTabbedScreen(
             onAddCustomModel = onAddCustomModel,
             onVoiceServiceClick = onVoiceServiceClick,
             showModelsSection = false,
-            bottomBar = bottomBar,
+            bottomBar = tabStrip,
         )
 
         ProviderDetailTab.MODELS -> {
@@ -78,13 +111,45 @@ fun ProviderDetailTabbedScreen(
                 SettingsScaffold(
                     title = instance.label,
                     onBack = onBack,
-                    bottomBar = bottomBar,
+                    bottomBar = {
+                        // Action bar sits directly above the tab strip, sharing
+                        // its surface so the two read as one pinned footer.
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            tonalElevation = 3.dp,
+                        ) {
+                            Column {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(0.5.dp)
+                                        .background(
+                                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                                        ),
+                                )
+                                ProviderModelsActionBar(
+                                    controller = modelsController,
+                                    providerRepository = providerRepository,
+                                    onAddCustomModel = onAddCustomModel,
+                                )
+                                ProviderDetailBottomTabs(
+                                    selected = tab,
+                                    onSelect = { next ->
+                                        if (next != tab) modelsController.swipeState.closeAll()
+                                        tab = next
+                                    },
+                                    // Footer already draws the surface + rule.
+                                    chrome = false,
+                                )
+                            }
+                        }
+                    },
                 ) {
                     ProviderModelsTabContent(
                         instanceId = instanceId,
                         providerRepository = providerRepository,
                         onModelEntryClick = onModelEntryClick,
-                        onAddCustomModel = onAddCustomModel,
+                        controller = modelsController,
                     )
                 }
             }
