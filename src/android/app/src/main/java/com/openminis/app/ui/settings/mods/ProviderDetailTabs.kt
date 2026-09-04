@@ -1,0 +1,198 @@
+package com.openminis.app.ui.settings.mods
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.openminis.app.R
+import com.openminis.app.data.model.normalizeModalities
+
+/**
+ * [FORK] The two fixed tabs at the bottom of the provider screen: 配置 / 模型.
+ *
+ * Modelled on kelive's provider page. The point of it being a PERSISTENT bar
+ * rather than a segmented control at the top: on a page this long (label,
+ * credential, endpoint, API format, Azure, image endpoint, status, voice,
+ * thinking rules) the switcher has to stay reachable after the user has
+ * scrolled — a top-anchored control scrolls away exactly when it is wanted.
+ *
+ * Lives in the fork's own file so upstream never touches it. The only upstream
+ * seam it needs is `SettingsScaffold(bottomBar = …)`, one defaulted parameter.
+ */
+enum class ProviderDetailTab {
+    CONFIG,
+    MODELS,
+}
+
+@Composable
+fun ProviderDetailBottomTabs(
+    selected: ProviderDetailTab,
+    onSelect: (ProviderDetailTab) -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        // Hairline above the bar so it reads as chrome separated from the
+        // scrolling content, not as another card in the list.
+        tonalElevation = 3.dp,
+    ) {
+        Column {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(0.5.dp)
+                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TabItem(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Settings,
+                    label = stringResource(R.string.fork_tab_config),
+                    selected = selected == ProviderDetailTab.CONFIG,
+                    onClick = { onSelect(ProviderDetailTab.CONFIG) },
+                )
+                TabItem(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Layers,
+                    label = stringResource(R.string.fork_tab_models),
+                    selected = selected == ProviderDetailTab.MODELS,
+                    onClick = { onSelect(ProviderDetailTab.MODELS) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TabItem(
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val tint = if (selected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(22.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = tint,
+        )
+    }
+}
+
+/**
+ * [FORK] Small pill used on model rows for capability tags (chat / think /
+ * img / audio …). Same visual recipe as upstream's `ModalityBadge` so the two
+ * lists don't read as different apps, but declared here to keep the fork's
+ * files self-contained.
+ */
+@Composable
+fun ForkCapabilityChip(text: String, emphasized: Boolean = false) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall,
+        maxLines = 1,
+        softWrap = false,
+        color = if (emphasized) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        modifier = Modifier
+            .background(
+                if (emphasized) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+                },
+                RoundedCornerShape(4.dp),
+            )
+            .padding(horizontal = 5.dp, vertical = 1.dp),
+    )
+}
+
+/**
+ * [FORK] Capability tags for one model, in a stable order.
+ * `chat` is unconditional — every entry in this list is a chat-capable model —
+ * followed by reasoning, then the non-text modalities.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun ForkModelCapabilityRow(model: com.openminis.app.data.model.LLMModel) {
+    val chat = stringResource(R.string.fork_chip_chat)
+    val think = stringResource(R.string.fork_chip_reasoning)
+    val ins = model.inputModalities.normalizeModalities().orEmpty()
+    val outs = model.outputModalities.normalizeModalities().orEmpty()
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        ForkCapabilityChip(chat)
+        if (model.supportsReasoning == true) ForkCapabilityChip(think, emphasized = true)
+        if ("image" in ins) ForkCapabilityChip("img")
+        if ("pdf" in ins) ForkCapabilityChip("pdf")
+        if ("audio" in ins) ForkCapabilityChip("audio")
+        if ("video" in ins) ForkCapabilityChip("video")
+        if ("image" in outs) ForkCapabilityChip("img-out", emphasized = true)
+        if ("audio" in outs) ForkCapabilityChip("audio-out", emphasized = true)
+        if ("video" in outs) ForkCapabilityChip("video-out", emphasized = true)
+    }
+}
+
+/** Provider accent dot, matching upstream's palette. */
+@Composable
+fun ForkProviderDot(providerType: com.openminis.app.data.model.ProviderType?) {
+    Box(
+        modifier = Modifier
+            .size(8.dp)
+            .background(
+                com.openminis.app.ui.components.providerDotColor(providerType),
+                CircleShape,
+            ),
+    )
+}

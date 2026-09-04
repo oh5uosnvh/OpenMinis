@@ -83,6 +83,13 @@ fun SettingsScaffold(
     centerTitle: Boolean = false,
     floatingActionButton: @Composable (() -> Unit)? = null,
     scrollable: Boolean = true,
+    // [FORK-HOOK bottom-tabs] Optional persistent bottom bar. Added as a
+    // defaulted parameter so every existing caller compiles unchanged; the
+    // fork's provider screen uses it to host the fixed 配置 / 模型 tab pair
+    // (ui/settings/mods/ProviderDetailTabbedScreen.kt). Keeping it here rather
+    // than nesting a second Scaffold inside the screen avoids double-counting
+    // the navigation-bar inset.
+    bottomBar: @Composable (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Scaffold(
@@ -122,6 +129,8 @@ fun SettingsScaffold(
             }
         },
         floatingActionButton = { floatingActionButton?.invoke() },
+        // [FORK-HOOK bottom-tabs] see the parameter's comment.
+        bottomBar = { bottomBar?.invoke() },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
         // T183: imePadding() shrinks the scroll container by the IME's
