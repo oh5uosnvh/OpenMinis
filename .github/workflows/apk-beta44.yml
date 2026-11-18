@@ -1,0 +1,33 @@
+name: Private APK beta44
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Private source commit SHA
+        required: true
+      release_tag:
+        description: Private release tag
+        required: true
+permissions:
+  contents: read
+jobs:
+  apk:
+    if: github.actor == 'oh5uosnvh'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: oh5uosnvh/Minis-qiyiguo
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.YG_PAT }}
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Analyze official APK privately
+        env:
+          GH_TOKEN: ${{ secrets.YG_PAT }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: bash scripts/apk-beta44/analyze.sh
