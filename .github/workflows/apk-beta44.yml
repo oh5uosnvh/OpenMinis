@@ -5,6 +5,12 @@ on:
       source_ref:
         description: Private source commit SHA
         required: true
+      mode:
+        description: analyze or build
+        required: true
+        default: analyze
+        type: choice
+        options: [analyze, build]
       release_tag:
         description: Private release tag
         required: true
@@ -30,4 +36,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.YG_PAT }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-        run: bash scripts/apk-beta44/analyze.sh
+          APK_MODE: ${{ inputs.mode }}
+        run: |
+          case "$APK_MODE" in
+            analyze) bash scripts/apk-beta44/analyze.sh ;;
+            build) bash scripts/apk-beta44/build.sh ;;
+            *) exit 1 ;;
+          esac
